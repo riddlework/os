@@ -339,7 +339,8 @@ int join(int * status) {
     restore_interrupts(old_psr);
 }
 
-void quit_phase_1a(int status, int switchToPid) {
+// terminates the current process with a certain status value
+void quit(int status) {
 
     // store the current psr
     unsigned int psr_to_restore = USLOSS_PsrGet();
@@ -385,28 +386,19 @@ void dumpProcesses(void) {
 }
 
 
-void TEMP_switchTo(int pid) {
+// requests that another process terminate
+void zap(int pid) {
 
-    // store the current psr and disable interrupts
-    unsigned int old_psr = disable_interrupts();
-
-    // check for kernel mode
-    check_kernel_mode("TEMP_switchTo");
-
-
-    USLOSS_Console("Phase 1A TEMPORARY HACK: init() manually switching to PID %d.\n", pid);
-    // retrieve the current process from the prob_table
-    pcb * old_proc = cur_proc; 
-    pcb * new_proc = get_proc(pid);
-    pcb * cur_proc = new_proc;
-
-    // perform context switch
-    USLOSS_ContextSwitch(&old_proc->context,&new_proc->context);
-
-
-                                                                                   
-    // stuff here
-
-    // restore interrupts
-    restore_interrupts(old_psr);
 }
+
+
+// blocks the current process
+void blockMe() {
+
+}
+
+
+// unblocks the process with the given pid
+int unblockProc(int pid) {
+}
+
