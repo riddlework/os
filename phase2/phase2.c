@@ -4,6 +4,10 @@
 
 // GLOBAL VARIABLES
 // array of function pointers
+// int funct(char c, char * str, long l);
+// int (*fptr)(char,char*,long);
+// int (*many_pointersA[10])(char,char*,long);
+
 // process table -- and pcb?
    // use % PID from phase 1 to map PIDs to appropriate slots
 
@@ -16,6 +20,12 @@ typedef struct node {
     struct node * next;
 } Node;
 
+// pcb definition
+   // table of phase1 stuff
+   // table of phase2 stuff
+   // array shadow process table
+   // SHOULD have pcb struct?
+
 // RUSS QUESTIONS:
    // are we overthinking the waking receivers problem? 4.1.1
       // just wake receivers in FIFO order
@@ -25,7 +35,15 @@ typedef struct node {
    // how to declare systemCallVec?
    
    // should a mailbox be a struct?
+     // yes -- what should be in the struct?
+     // allocated or not?
+     // parameters?
+     // number of messages?
+     // largest message?
+     // queue of pending messages/processes
    // what's the difference between a mailbox and a mailslot?
+      // a mail slot represent one message
+      // every slot should have a buffer of the appropriate size;
    // can/should we access the pcb struct from phase1?
 
 // declare systemCallVec
