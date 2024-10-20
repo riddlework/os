@@ -1,24 +1,54 @@
 #include "usyscall.h"
+#include "phase1.h"
 #include "phase2.h"
-
-
-// GLOBAL VARIABLES
-// array of function pointers
-// int funct(char c, char * str, long l);
-// int (*fptr)(char,char*,long);
-// int (*many_pointersA[10])(char,char*,long);
 
 // process table -- and pcb?
    // use % PID from phase 1 to map PIDs to appropriate slots
 
-typedef struct mbox {
+// Questions
+  // how do we know when a mail box has consumed its maximum number of mail slots?
+  // can we leave start_services_processes blank? It wasn't in the header file.
+  // do we have to disable interrupts?
+  // is it permissible to reuse pids?
 
-} Mbox;
+// STRUCT DEFINITIONS
+typedef struct pcb {
+    int pid; // process id
 
-typedef struct node {
+} pcb;
+
+typedef struct mslot {
+    char mesg[MAX_MESSAGE];
+    struct mslot * next;
+} mslot;
+
+typedef struct proc_node {
     // what is the thing inside of it
-    struct node * next;
-} Node;
+    pcb * proc;
+    struct proc_node * next;
+} proc_node;
+
+typedef struct mbox {
+    int is_alive;
+    mslot * mslots;
+    proc_node * consumers;
+    proc_node * producers;
+    // max buffered messages?
+
+    // runnable processes
+} mbox;
+
+
+typedef struct queue {
+    proc_node * head;
+    proc_node * tail;
+} queue;
+
+// GLOBAL VARIABLES
+static pcb * proc_table[MAXPROC];
+static mslot * all_mslots[MAXSLOTS];
+static mbox * all_mboxes[MAXMBOX];
+void (*systemCallVec[MAXSYSCALLS])(USLOSS_Sysargs *args);
 
 // pcb definition
    // table of phase1 stuff
@@ -46,12 +76,6 @@ typedef struct node {
       // every slot should have a buffer of the appropriate size;
    // can/should we access the pcb struct from phase1?
 
-// declare systemCallVec
-// make blocked queues for:
-   // producers
-   // consumers
-   // mail slot
-
 // PRODUCERS:
 // block when they attempt to send a message, but the mailbox
 // has already consumed its maximum number of mail slots
@@ -60,14 +84,34 @@ typedef struct node {
 // Consumers block when there are no queued messages
 
 void phase2_init() {
+    // disable interrupts?
+    
+    // memset all the arrays to 0?
+    
 
+    // restore interrupts?
+
+}
+
+void phase2_start_service_processes() {
+
+}
+
+int find_next_empty_mbox() {
+    for (int i=0; i < MAXMBOX; i++) {
+        if (!all_mboxes[i]->is_alive) return i;
+    } return -1;
 }
 
 int MboxCreate(int numSlots, int slotSize) {
-    return 0;
+    int mbox_id = find_next_empty_mbox();
+    if (numSlots < 0 || slotSize < 0) return -1;
+    return mbox_id;
 }
 
 int MboxRelease(int mailboxID) {
+    if (!all_mboxes[mailboxID]->is_alive) return -1;
+    // do some shit
     return 0;
 }
 
