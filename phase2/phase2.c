@@ -2,6 +2,7 @@
 #include "phase1.h"
 #include "phase2.h"
 #include <string.h>
+#include <stdio.h>
 
 // process table -- and pcb?
    // use % PID from phase 1 to map PIDs to appropriate slots
@@ -33,6 +34,8 @@ typedef struct proc_node {
 
 typedef struct mbox {
     int is_alive;
+    int numSlots;
+    int maxMsgSize;
     mslot * mslots;
     proc_node * consumers;
     proc_node * producers;
@@ -52,42 +55,70 @@ static pcb * proc_table[MAXPROC];
 static mslot * all_mslots[MAXSLOTS];
 static mbox * all_mboxes[MAXMBOX];
 void (*systemCallVec[MAXSYSCALLS])(USLOSS_Sysargs *args);
-
-// pcb definition
-   // table of phase1 stuff
-   // table of phase2 stuff
-   // array shadow process table
-   // SHOULD have pcb struct?
-
-// RUSS QUESTIONS:
-   // are we overthinking the waking receivers problem? 4.1.1
-      // just wake receivers in FIFO order
-      // consumer queued flag wherever necessary?
-   // what is the point of a zero-slot mailbox? What is a mailbox?
-      // is it just a way of blocking?
-   // how to declare systemCallVec?
    
-   // should a mailbox be a struct?
-     // yes -- what should be in the struct?
-     // allocated or not?
-     // parameters?
-     // number of messages?
-     // largest message?
-     // queue of pending messages/processes
-   // what's the difference between a mailbox and a mailslot?
-      // a mail slot represent one message
-      // every slot should have a buffer of the appropriate size;
-   // can/should we access the pcb struct from phase1?
 
 // PRODUCERS:
 // block when they attempt to send a message, but the mailbox
 // has already consumed its maximum number of mail slots
 // must deliver their messages in the same order they arrived
+// is it permissible to reuse pids?
+// when releasing a mail box, how do we wake up the blocked processes?
 
 // Consumers block when there are no queued messages
 
+// disable interrupts
+unsigned int disable_interrupts() {
+    
+    // store the current psr
+    unsigned int old_psr = USLOSS_PsrGet();
+
+    // disable interrupts
+    int psr_status = USLOSS_PsrSet(old_psr & ~USLOSS_PSR_CURRENT_INT);
+
+    // TODO: use psr_status to check for errors?
+    
+    return old_psr;
+}
+
+// restore interrupts
+void restore_interrupts(unsigned int old_psr) {
+
+    // restore interrupts to their previous state
+    int psr_status = USLOSS_PsrSet(old_psr);
+
+    // TODO: use psr stsatus to check for errors?
+}
+
+// check for kernel mode
+void check_kernel_mode(char * arg) {
+    unsigned int psr = USLOSS_PsrGet();
+    if ((psr & USLOSS_PSR_CURRENT_MODE) == 0) {
+        printf("Code in %s is being called from user mode\n", arg);
+        USLOSS_Halt(1);
+    }
+}
+
+static void nullsys(int syscallNum) {
+
+    // check for kernel mode and disable interrupts
+    check_kernel_mode("nullsys");
+    unsigned int old_psr = disable_interrupts();
+
+    // print out error message
+    printf("nullsys(): Program called an unimplemented syscall.  syscall no: %d  PSR: %d\n", syscallNum, USLOSS_PsrGet());
+
+    // halt simulation
+    USLOSS_Halt(1);
+
+    // restore interrupts
+    restore_interrupts(old_psr);
+}
+
 void phase2_init() {
-    // disable interrupts?
+
+    // check kernel mode and disable interrupts
+    check_kernel_mode("phase2_init");
+    unsigned int old_psr = disable_interrupts();
     
     // memset all the arrays to 0?
     memset(proc_table, 0, sizeof(proc_table));
@@ -95,14 +126,23 @@ void phase2_init() {
     memset(all_mboxes, 0, sizeof(all_mboxes));
 
     // intialize array of function pointers
+
     
 
-    // restore interrupts?
-
+    // restore interrupts
+    restore_interrupts(old_psr);
 }
 
 void phase2_start_service_processes() {
 
+    // check kernel mode and disable interrupts
+    check_kernel_mode("phase2_start_service_processes");
+    unsigned int old_psr = disable_interrupts();
+
+    // stuff here
+
+    // restore interrupts
+    restore_interrupts(old_psr);
 }
 
 int find_next_empty_mbox() {
@@ -112,15 +152,45 @@ int find_next_empty_mbox() {
 }
 
 int MboxCreate(int numSlots, int slotSize) {
+
+    // check kernel mode and disable interrupts
+    check_kernel_mode("MboxCreate");
+    unsigned int old_psr = disable_interrupts();
+
     int mbox_id = find_next_empty_mbox();
     if (numSlots < 0 || slotSize < 0) return -1;
-    if (mbox_id >= 0) all_mboxes[mbox_id]->is_alive = 1;
+
+    if (mbox_id >= 0) {
+        mbox * mbox = all_mboxes[mbox_id];
+        mbox->is_alive = 1;
+        mbox->numSlots = numSlots;
+        mbox->maxMsgSize = slotSize;
+    }
+
+    // restore interrupts and return
+    restore_interrupts(old_psr);
     return mbox_id;
 }
 
-int MboxRelease(int mailboxID) {
-    if (!all_mboxes[mailboxID]->is_alive) return -1;
-    // do some shit
+int MboxRelease(int mboxID) {
+    
+    // check kernel mode and disable interrupts
+    check_kernel_mode("MboxRelease");
+    unsigned int old_psr = disable_interrupts();
+
+    mbox * mbox = all_mboxes[mboxID];
+    if (!mbox->is_alive) return -1;
+
+    // release mslots
+    mslot * cur_mslot = mbox->mslots;
+    while ((cur_mslot = cur_mslot->next)) cur_mslot->is_alive = 0;
+
+    // set everything to 0
+    memset(mbox, 0, sizeof(struct mbox));
+
+
+    // restore interrupts
+    restore_interrupts(old_psr);
     return 0;
 }
 
@@ -131,6 +201,10 @@ int find_next_empty_mslot() {
 }
 
 int MboxSend(int mboxID, void *msg, int messageSize) {
+
+    // check kernel mode and disable interrupts
+    check_kernel_mode("MboxSend");
+    unsigned int old_psr = disable_interrupts();
     mbox * mbox = all_mboxes[mboxID];
 
     // check if the consumer queue is empty
@@ -141,12 +215,17 @@ int MboxSend(int mboxID, void *msg, int messageSize) {
     // check for invalid mailbox id
     if (!(mboxID >= 0 && mboxID < MAXMBOX) || !mbox->is_alive) return -1;
     
-    // success
+    // restore interrupts
+    restore_interrupts(old_psr);
     return 0;
 }
 
 int MboxRecv(int mboxID, void *msg, int maxMsgSize) {
-    // may block
+
+    // check kernel mode and disable interrupts
+    check_kernel_mode("MboxRecv");
+    unsigned int old_psr = disable_interrupts();
+
     mbox * mbox = all_mboxes[mboxID];
     int msgSize = strlen((char *) msg);
 
@@ -157,11 +236,18 @@ int MboxRecv(int mboxID, void *msg, int maxMsgSize) {
             || msgSize >= maxMsgSize)
         return -1;
 
+    // restore interrupts
+    restore_interrupts(old_psr);
     return 0;
 }
 
 int MboxCondSend(int mboxID, void *msg, int msgSize) {
-    // will never block
+    // WILL NEVER BLOCK
+
+    // check kernel mode and disable interrupts
+    check_kernel_mode("MboxCondSend");
+    unsigned int old_psr = disable_interrupts();
+
     mbox * mbox = all_mboxes[mboxID];
 
     // check if the consumer queue is empty
@@ -172,16 +258,20 @@ int MboxCondSend(int mboxID, void *msg, int msgSize) {
     // check for invalid mailbox id
     if (!(mboxID >= 0 && mboxID < MAXMBOX) || !mbox->is_alive) return -2;
     
-    
-    // success
+    // restore interrupts
+    restore_interrupts(old_psr);
     return 0;
 }
 
 int MboxCondRecv(int mboxID, void *msg, int maxMsgSize) {
-    // will never block
+    // WILL NEVER BLOCK
+    
+    // check kernel mode and disable interrupts
+    check_kernel_mode("MboxCondRecv");
+
+    unsigned int old_psr = disable_interrupts();
     mbox * mbox = all_mboxes[mboxID];
     int msgSize = strlen((char *) msg);
-
 
     // check for invalid mailbox id
     if (!(mboxID >= 0 && mboxID < MAXMBOX)
@@ -189,6 +279,8 @@ int MboxCondRecv(int mboxID, void *msg, int maxMsgSize) {
             || msgSize >= maxMsgSize)
         return -1;
 
+    // restore interrupts
+    restore_interrupts(old_psr);
     return 0;
 }
 
