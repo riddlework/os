@@ -20,12 +20,6 @@
 #define MAXNAME      50
 
 /*
- * Maximum length of string argument passed to a newly created process
- */
-
-#define MAXARG       100
-
-/*
  * Maximum number of syscalls.
  */
 
@@ -40,14 +34,17 @@ extern void phase1_init(void);
 extern int  spork(char *name, int(*func)(void *), void *arg,
                   int stacksize, int priority);
 extern int  join(int *status);
+extern void quit(int status) __attribute__((__noreturn__));
+extern void zap(int pid);
+extern void blockMe(void);
+extern int  unblockProc(int pid);
 
-extern void quit_phase_1a(int status, int switchToPid) __attribute__((__noreturn__));
-extern void quit         (int status)                  __attribute__((__noreturn__));
+extern void dispatcher(void);
+
+extern int  currentTime(void);
 
 extern int  getpid(void);
 extern void dumpProcesses(void);
-
-void TEMP_switchTo(int pid);
 
 
 /*

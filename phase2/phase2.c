@@ -1,6 +1,7 @@
 #include "usyscall.h"
 #include "phase1.h"
 #include "phase2.h"
+#include <string.h>
 
 // process table -- and pcb?
    // use % PID from phase 1 to map PIDs to appropriate slots
@@ -10,6 +11,7 @@
   // can we leave start_services_processes blank? It wasn't in the header file.
   // do we have to disable interrupts?
   // is it permissible to reuse pids?
+  // what in mboxrelease should return -1 when the consumers are unblocked?
 
 // STRUCT DEFINITIONS
 typedef struct pcb {
@@ -18,7 +20,8 @@ typedef struct pcb {
 } pcb;
 
 typedef struct mslot {
-    char mesg[MAX_MESSAGE];
+    char msg[MAX_MESSAGE];
+    int is_alive;
     struct mslot * next;
 } mslot;
 
@@ -87,6 +90,11 @@ void phase2_init() {
     // disable interrupts?
     
     // memset all the arrays to 0?
+    memset(proc_table, 0, sizeof(proc_table));
+    memset(all_mslots, 0, sizeof(all_mslots));
+    memset(all_mboxes, 0, sizeof(all_mboxes));
+
+    // intialize array of function pointers
     
 
     // restore interrupts?
@@ -106,6 +114,7 @@ int find_next_empty_mbox() {
 int MboxCreate(int numSlots, int slotSize) {
     int mbox_id = find_next_empty_mbox();
     if (numSlots < 0 || slotSize < 0) return -1;
+    if (mbox_id >= 0) all_mboxes[mbox_id]->is_alive = 1;
     return mbox_id;
 }
 
@@ -115,25 +124,72 @@ int MboxRelease(int mailboxID) {
     return 0;
 }
 
-int MboxSend(int mailboxID, void *message, int messageSize) {
+int find_next_empty_mslot() {
+    for (int i=0; i < MAXSLOTS; i++) {
+        if (!all_mslots[i]->is_alive) return i;
+    } return -1;
+}
+
+int MboxSend(int mboxID, void *msg, int messageSize) {
+    mbox * mbox = all_mboxes[mboxID];
+
+    // check if the consumer queue is empty
+    if (mbox->consumers) blockMe(); // and no space available check
+
+    if (find_next_empty_mslot() < 0) return -2;
+
+    // check for invalid mailbox id
+    if (!(mboxID >= 0 && mboxID < MAXMBOX) || !mbox->is_alive) return -1;
+    
+    // success
+    return 0;
+}
+
+int MboxRecv(int mboxID, void *msg, int maxMsgSize) {
     // may block
+    mbox * mbox = all_mboxes[mboxID];
+    int msgSize = strlen((char *) msg);
+
+
+    // check for invalid mailbox id
+    if (!(mboxID >= 0 && mboxID < MAXMBOX)
+            || !mbox->is_alive
+            || msgSize >= maxMsgSize)
+        return -1;
+
     return 0;
 }
 
-int MboxRecv(int mailboxID, void *message, int maxMessageSize) {
-    // may block
-    return 0;
-}
-
-int MboxCondSend(int mbox_id, void *msg_ptr, int msg_size) {
+int MboxCondSend(int mboxID, void *msg, int msgSize) {
     // will never block
+    mbox * mbox = all_mboxes[mboxID];
+
+    // check if the consumer queue is empty
+    if (mbox->consumers) blockMe(); // and no space available check
+
+    if (find_next_empty_mslot() < 0) return -2;
+
+    // check for invalid mailbox id
+    if (!(mboxID >= 0 && mboxID < MAXMBOX) || !mbox->is_alive) return -2;
+    
+    
+    // success
     return 0;
 }
 
-int MboxCondRecv(int mbox_id, void *msg_ptr, int msg_max_size) {
+int MboxCondRecv(int mboxID, void *msg, int maxMsgSize) {
     // will never block
-    return 0;
+    mbox * mbox = all_mboxes[mboxID];
+    int msgSize = strlen((char *) msg);
 
+
+    // check for invalid mailbox id
+    if (!(mboxID >= 0 && mboxID < MAXMBOX)
+            || !mbox->is_alive
+            || msgSize >= maxMsgSize)
+        return -1;
+
+    return 0;
 }
 
 void waitDevice(int type, int unit, int *status) {
@@ -144,6 +200,3 @@ void wakeupByDevice(int type, int unit, int status) {
 
 }
 
-void (*systemCallVec[])(USLOSS_Sysargs *args) {
-    
-}
