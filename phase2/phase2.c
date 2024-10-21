@@ -293,10 +293,6 @@ int MboxRecv(int mboxID, void *msg, int maxMsgSize) {
 
 
 
-
-
-
-
     // restore interrupts
     restore_interrupts(old_psr);
     return 0;
