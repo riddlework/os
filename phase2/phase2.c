@@ -13,6 +13,7 @@
   // do we have to disable interrupts?
   // is it permissible to reuse pids?
   // what in mboxrelease should return -1 when the consumers are unblocked?
+  // how to wake up blocked processes when releasing a mailbox?
 
 // STRUCT DEFINITIONS
 typedef struct pcb {
@@ -63,6 +64,7 @@ void (*systemCallVec[MAXSYSCALLS])(USLOSS_Sysargs *args);
 // must deliver their messages in the same order they arrived
 // is it permissible to reuse pids?
 // when releasing a mail box, how do we wake up the blocked processes?
+// what are service processes? Why do we need to create them?
 
 // Consumers block when there are no queued messages
 
