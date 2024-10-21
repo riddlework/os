@@ -21,6 +21,11 @@ typedef struct pcb {
 
 } pcb;
 
+typedef struct queue {
+    void * head;
+    void * tail;
+} queue;
+
 typedef struct mslot {
     char msg[MAX_MESSAGE];
     int is_alive;
@@ -37,19 +42,15 @@ typedef struct mbox {
     int is_alive;
     int numSlots;
     int maxMsgSize;
-    mslot * mslots;
-    proc_node * consumers;
-    proc_node * producers;
+
+    queue * mslots;
+    queue * consumers;
+    queue * producers;
     // max buffered messages?
 
     // runnable processes
 } mbox;
 
-
-typedef struct queue {
-    proc_node * head;
-    proc_node * tail;
-} queue;
 
 // GLOBAL VARIABLES
 static pcb * proc_table[MAXPROC];
@@ -184,7 +185,7 @@ int MboxRelease(int mboxID) {
     if (!mbox->is_alive) return -1;
 
     // release mslots
-    mslot * cur_mslot = mbox->mslots;
+    mslot * cur_mslot = mbox->mslots->head;
     while ((cur_mslot = cur_mslot->next)) cur_mslot->is_alive = 0;
 
     // set everything to 0
@@ -207,21 +208,67 @@ int MboxSend(int mboxID, void *msg, int messageSize) {
     // check kernel mode and disable interrupts
     check_kernel_mode("MboxSend");
     unsigned int old_psr = disable_interrupts();
+
+    // retrieve mailbox and mslot id
     mbox * mbox = all_mboxes[mboxID];
+    int mslotID = find_next_empty_mslot();
 
-    // check if the consumer queue is empty
-    if (mbox->consumers) blockMe(); // and no space available check
-
-    if (find_next_empty_mslot() < 0) return -2;
+    // check for invalid slot id
+    if (mslotID < 0) return -2;
 
     // check for invalid mailbox id
     if (!(mboxID >= 0 && mboxID < MAXMBOX) || !mbox->is_alive) return -1;
-    
+
+    // if no remaining slots, add to producer queue and block
+    if (!mbox->numSlots) {
+        int pid = getpid();
+        pcb * proc = proc_table[pid % MAXPROC];
+        
+        // create new queue node and add producer proc to queue head
+        proc_node proc_node = {proc, mbox->producers->head};
+        mbox->producers->head = &proc_node;
+        
+        blockMe();
+    } else {
+        // get next mslot
+        mslot * mslot = all_mslots[mslotID];
+
+        // add message to mailslot if there is an available slot
+        strcpy(mslot->msg, (char *) msg);
+        mslot->is_alive = 1;
+        
+        mbox->numSlots--;
+
+        // add mslot to mbox queue
+        mslot->next = mbox->mslots->head;
+        mbox->mslots->head = mslot;
+    }
+
+    // if there is a consumer waiting to consume a message, wake up
+    // the tail of the consumer queue
+    queue * consumer_queue = mbox->consumers;
+    if (consumer_queue) {
+        proc_node * tail = consumer_queue->tail;
+        pcb * proc_toBeUnblocked = tail->proc;
+
+        // iterate through queue to remove tail
+        // MIGHT CAUSE BUGS
+        proc_node * cur_node = consumer_queue->head;
+        while (cur_node->next->next) { cur_node = cur_node->next; }
+        cur_node->next = NULL;
+        consumer_queue->tail = cur_node;
+
+        // unblock process
+        unblockProc(proc_toBeUnblocked->pid);
+    }
+
     // restore interrupts
     restore_interrupts(old_psr);
-    return 0;
+    return 0; // success
 }
 
+// receive a message from a mailslot in a mailbox into the process
+// which is consuming it
 int MboxRecv(int mboxID, void *msg, int maxMsgSize) {
 
     // check kernel mode and disable interrupts
