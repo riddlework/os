@@ -16,39 +16,29 @@
   // how to wake up blocked processes when releasing a mailbox?
 
 // STRUCT DEFINITIONS
+typedef struct node {
+    void * thing;
+    struct node * next;
+} Node;
+
 typedef struct pcb {
     int pid; // process id
-
 } pcb;
-
-typedef struct queue {
-    void * head;
-    void * tail;
-} queue;
 
 typedef struct mslot {
     char msg[MAX_MESSAGE];
     int is_alive;
-    struct mslot * next;
 } mslot;
-
-typedef struct proc_node {
-    // what is the thing inside of it
-    pcb * proc;
-    struct proc_node * next;
-} proc_node;
 
 typedef struct mbox {
     int is_alive;
     int numSlots;
     int maxMsgSize;
 
-    queue * mslots;
-    queue * consumers;
-    queue * producers;
-    // max buffered messages?
+    Node * mslots; // queue of mslot structs
+    Node * consumers; // queue of consumer processes
+    Node * producers; // queue of producer processes
 
-    // runnable processes
 } mbox;
 
 
@@ -169,6 +159,7 @@ int MboxCreate(int numSlots, int slotSize) {
         mbox->numSlots = numSlots;
         mbox->maxMsgSize = slotSize;
     }
+    // deal with assigning tail pointer?
 
     // restore interrupts and return
     restore_interrupts(old_psr);
@@ -185,8 +176,8 @@ int MboxRelease(int mboxID) {
     if (!mbox->is_alive) return -1;
 
     // release mslots
-    mslot * cur_mslot = mbox->mslots->head;
-    while ((cur_mslot = cur_mslot->next)) cur_mslot->is_alive = 0;
+    /*mslot * cur_mslot = mbox->mslots->head;*/
+    /*while ((cur_mslot = cur_mslot->next)) cur_mslot->is_alive = 0;*/
 
     // set everything to 0
     memset(mbox, 0, sizeof(struct mbox));
@@ -201,6 +192,23 @@ int find_next_empty_mslot() {
     for (int i=0; i < MAXSLOTS; i++) {
         if (!all_mslots[i]->is_alive) return i;
     } return -1;
+}
+
+// remove and return the tail -- list will always have at least one node
+void* popTail(Node** head) {
+    void* thing_toReturn = NULL;
+    if (!(*head)->next) {
+        // list with one node
+        thing_toReturn = (*head)->thing;
+        *head = NULL;
+    } else {
+        // list with more than one node
+        Node * cur = *head;
+        while (cur->next->next) { cur = cur->next; }
+
+        void * thing_toReturn = cur->next->thing;
+        cur->next = NULL;
+    } return thing_toReturn;
 }
 
 int MboxSend(int mboxID, void *msg, int messageSize) {
@@ -224,9 +232,9 @@ int MboxSend(int mboxID, void *msg, int messageSize) {
         int pid = getpid();
         pcb * proc = proc_table[pid % MAXPROC];
         
-        // create new queue node and add producer proc to queue head
-        proc_node proc_node = {proc, mbox->producers->head};
-        mbox->producers->head = &proc_node;
+        // create new proc node and add producer proc to head
+        Node proc_node = {proc, mbox->producers};
+        mbox->producers = &proc_node;
         
         blockMe();
     } else {
@@ -239,26 +247,16 @@ int MboxSend(int mboxID, void *msg, int messageSize) {
         
         mbox->numSlots--;
 
-        // add mslot to mbox queue
-        mslot->next = mbox->mslots->head;
-        mbox->mslots->head = mslot;
+        // add mslot to mbox mslots
+        Node mslot_node = {mslot, mbox->mslots};
+        mbox->mslots = &mslot_node;
+
     }
 
     // if there is a consumer waiting to consume a message, wake up
     // the tail of the consumer queue
-    queue * consumer_queue = mbox->consumers;
-    if (consumer_queue) {
-        proc_node * tail = consumer_queue->tail;
-        pcb * proc_toBeUnblocked = tail->proc;
-
-        // iterate through queue to remove tail
-        // MIGHT CAUSE BUGS
-        proc_node * cur_node = consumer_queue->head;
-        while (cur_node->next->next) { cur_node = cur_node->next; }
-        cur_node->next = NULL;
-        consumer_queue->tail = cur_node;
-
-        // unblock process
+    if (mbox->consumers) {
+        pcb* proc_toBeUnblocked = popTail(&mbox->consumers);
         unblockProc(proc_toBeUnblocked->pid);
     }
 
@@ -278,12 +276,26 @@ int MboxRecv(int mboxID, void *msg, int maxMsgSize) {
     mbox * mbox = all_mboxes[mboxID];
     int msgSize = strlen((char *) msg);
 
-
     // check for invalid mailbox id
     if (!(mboxID >= 0 && mboxID < MAXMBOX)
             || !mbox->is_alive
             || msgSize >= maxMsgSize)
         return -1;
+
+
+    // check if there are any messages to be consumed
+    if (mbox->mslots) {
+        // consume message
+        mslot* msg_toReceive = popTail(&mbox->mslots);
+        msg = &msg_toReceive->msg;
+    }
+
+
+
+
+
+
+
 
     // restore interrupts
     restore_interrupts(old_psr);
