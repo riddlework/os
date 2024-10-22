@@ -142,11 +142,6 @@ void phase2_start_service_processes() {
 
 
 /* HELPER FUNCTIONS */
-int find_next_empty_mbox() {
-    for (int i=0; i < MAXMBOX; i++) {
-        if (!all_mboxes[i].is_alive) return i;
-    } return -1;
-}
 
 int find_next_empty_mslot() {
     for (int i=0; i < MAXSLOTS; i++) {
@@ -183,6 +178,12 @@ void* popTail(Node** head) {
 
 
 /* MBOX FUNCTIONS */
+int find_next_empty_mbox() {
+    for (int i=0; i < MAXMBOX; i++) {
+        if (!all_mboxes[i].is_alive) return i;
+    } return -1;
+}
+
 int MboxCreate(int numSlots, int slotSize) {
 
     // check kernel mode and disable interrupts
@@ -191,14 +192,13 @@ int MboxCreate(int numSlots, int slotSize) {
 
     int mbox_id = find_next_empty_mbox();
     if (numSlots < 0 || slotSize < 0) return -1;
-
+    
+    mbox * mbox = &all_mboxes[mbox_id];
     if (mbox_id >= 0) {
-        mbox mbox = all_mboxes[mbox_id];
-        mbox.is_alive = 1;
-        mbox.numSlots = numSlots;
-        mbox.maxMsgSize = slotSize;
+        mbox->is_alive = 1;
+        mbox->numSlots = numSlots;
+        mbox->maxMsgSize = slotSize;
     }
-    // deal with assigning tail pointer?
 
     // restore interrupts and return
     restore_interrupts(old_psr);
