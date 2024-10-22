@@ -60,12 +60,6 @@ void (*systemCallVec[MAXSYSCALLS])(USLOSS_Sysargs *args);
 // Consumers block when there are no queued messages
 
 
-// helper for adding producers/consumers to queues
-Node enqueueMe(Node head) {
-
-    pcb proc = proc_table[getpid() % MAXPROC];
-    Node proc_node = {&proc, head};
-}
 
 // disable interrupts
 unsigned int disable_interrupts() {
@@ -146,12 +140,49 @@ void phase2_start_service_processes() {
     restore_interrupts(old_psr);
 }
 
+
+/* HELPER FUNCTIONS */
 int find_next_empty_mbox() {
     for (int i=0; i < MAXMBOX; i++) {
         if (!all_mboxes[i].is_alive) return i;
     } return -1;
 }
 
+int find_next_empty_mslot() {
+    for (int i=0; i < MAXSLOTS; i++) {
+        if (!all_mslots[i].is_alive) return i;
+    } return -1;
+}
+
+// helper for adding producers/consumers to queues
+Node * enqueueMe(Node * head) {
+    pcb proc = proc_table[getpid() % MAXPROC];
+    Node * proc_node;
+    proc_node->thing = &proc;
+    proc_node->next = head;
+    return proc_node;
+}
+
+// remove and return the tail -- list will always have at least one node
+void* popTail(Node** head) {
+    void* thing_toReturn = NULL;
+    if (!(*head)->next) {
+        // list with one node
+        thing_toReturn = (*head)->thing;
+        *head = NULL;
+    } else {
+        // list with more than one node
+        Node * cur = *head;
+        while (cur->next->next) { cur = cur->next; }
+
+        thing_toReturn = cur->next->thing;
+        cur->next = NULL;
+    } return thing_toReturn;
+}
+/****************************************************/
+
+
+/* MBOX FUNCTIONS */
 int MboxCreate(int numSlots, int slotSize) {
 
     // check kernel mode and disable interrupts
@@ -196,36 +227,13 @@ int MboxRelease(int mboxID) {
     return 0;
 }
 
-int find_next_empty_mslot() {
-    for (int i=0; i < MAXSLOTS; i++) {
-        if (!all_mslots[i].is_alive) return i;
-    } return -1;
-}
-
-// remove and return the tail -- list will always have at least one node
-void* popTail(Node** head) {
-    void* thing_toReturn = NULL;
-    if (!(*head)->next) {
-        // list with one node
-        thing_toReturn = (*head)->thing;
-        *head = NULL;
-    } else {
-        // list with more than one node
-        Node * cur = *head;
-        while (cur->next->next) { cur = cur->next; }
-
-        thing_toReturn = cur->next->thing;
-        cur->next = NULL;
-    } return thing_toReturn;
-}
-
 
 // newer (fixed?) version
 //
-// there's a high likelyhood that some of these commented chunks will
+// there's a high likelihood that some of these commented chunks will
 // be copied into helper functions that will be used by this function 
 // as well as mboxCondSend()
-int MboxSendAlt(int mboxID, void *msg, int messageSize) {
+int MboxSend(int mboxID, void *msg, int messageSize) {
 
     // check kernel mode and disable interrupts
     check_kernel_mode("MboxSend");
@@ -244,7 +252,7 @@ int MboxSendAlt(int mboxID, void *msg, int messageSize) {
     if (!mbox.numSlots) {
 
         // call helper to enqueue and block
-        mbox.producers = &enqueueMe(mbox.producers);
+        mbox.producers = enqueueMe(mbox.producers);
         blockMe();
     }
 
@@ -272,69 +280,14 @@ int MboxSendAlt(int mboxID, void *msg, int messageSize) {
     return 0; // success
 }
 
-
-
-// might be deleting this if the above function (newer version) works
-int MboxSend(int mboxID, void *msg, int messageSize) {
-
-    // check kernel mode and disable interrupts
-    check_kernel_mode("MboxSend");
-    unsigned int old_psr = disable_interrupts();
-
-    // retrieve mailbox and mslot id
-    mbox mbox = all_mboxes[mboxID];
-    int mslotID = find_next_empty_mslot();
-
-    // check for invalid slot id
-    if (mslotID < 0) return -2;
-
-    // check for invalid mailbox id
-    if (!(mboxID >= 0 && mboxID < MAXMBOX) || !mbox.is_alive) return -1;
-
-    // if no remaining slots, add to producer queue and block
-    if (!mbox.numSlots) {
-        int pid = getpid();
-        pcb proc = proc_table[pid % MAXPROC];
-        
-        // create new proc node and add producer proc to head
-        Node proc_node = {&proc, mbox.producers};
-        mbox.producers = &proc_node;
-        
-        blockMe();
-    } else {
-        // get next mslot
-        mslot mslot = all_mslots[mslotID];
-
-        // add message to mailslot if there is an available slot
-        strcpy(mslot.msg, (char *) msg);
-        mslot.is_alive = 1;
-        
-        mbox.numSlots--;
-
-        // add mslot to mbox mslots
-        Node mslot_node = {&mslot, mbox.mslots};
-        mbox.mslots = &mslot_node;
-
-    }
-
-    // if there is a consumer waiting to consume a message, wake up
-    // the tail of the consumer queue
-    if (mbox.consumers) {
-        pcb* proc_toBeUnblocked = popTail(&mbox.consumers);
-        unblockProc(proc_toBeUnblocked->pid);
-    }
-
-    // restore interrupts
-    restore_interrupts(old_psr);
-    return 0; // success
-}
-
 // newer (fixed?) version
 //
 // there's a high likelyhood that some of these commented chunks will
 // be copied into helper functions that will be used by this function 
 // as well as mboxCondRecv()
-int MboxRecvAlt(int mboxID, void *msg, int maxMsgSize) {
+//
+// receive a message from a mailslot in a mailbox into a process
+int MboxRecv(int mboxID, void *msg, int maxMsgSize) {
 
     // check kernel mode and disable interrupts
     check_kernel_mode("MboxRecv");
@@ -354,7 +307,7 @@ int MboxRecvAlt(int mboxID, void *msg, int maxMsgSize) {
     if (!mbox.mslots) {
         
         // call helper to enqueue and block
-        mbox.consumers = &enqueueMe(mbox.consumers);
+        mbox.consumers = enqueueMe(mbox.consumers);
         blockMe();
     }
 
@@ -374,67 +327,12 @@ int MboxRecvAlt(int mboxID, void *msg, int maxMsgSize) {
         unblockProc(proc_toBeUnblocked->pid);
     }
 
+    // zero slot mailboxes?
+
     // restore interrupts
     restore_interrupts(old_psr);
     
     return 0; //success
-}
-
-
-// receive a message from a mailslot in a mailbox into the process
-// which is consuming it
-int MboxRecv(int mboxID, void *msg, int maxMsgSize) {
-
-    // check kernel mode and disable interrupts
-    check_kernel_mode("MboxRecv");
-    unsigned int old_psr = disable_interrupts();
-
-    mbox mbox = all_mboxes[mboxID];
-    int msgSize = strlen((char *) msg);
-
-    // check for invalid mailbox id
-    if (!(mboxID >= 0 && mboxID < MAXMBOX)
-            || !mbox.is_alive
-            || msgSize >= maxMsgSize)
-        return -1;
-
-
-    // check if there are any messages to be consumed
-    if (mbox.mslots) {
-        // consume message and increment available mslots in the mbox
-        mslot* msg_toReceive = popTail(&mbox.mslots);
-        msg = &msg_toReceive->msg;
-        mbox.numSlots++;
-        
-        // if a producer is waiting, wake it to write into the newly empty mslot
-        if (mbox.producers) {
-            pcb* proc_toBeUnblocked = popTail(&mbox.producers);
-            unblockProc(proc_toBeUnblocked->pid);
-        }
-
-    } else {
-        // add consumer to consumer queue and block
-        int pid = getpid();
-        pcb proc = proc_table[pid % MAXPROC];
-        
-        // create new proc node and add consumer proc to head
-        Node proc_node = {&proc, mbox.consumers};
-        mbox.consumers = &proc_node;
-        
-        blockMe();
-    }
-
-    // zero-slot mailboxes?
-
-
-
-
-    // if msg size is zero, set msg to NULL
-    if (msgSize == 0) msg = NULL;
-
-    // restore interrupts
-    restore_interrupts(old_psr);
-    return 0;
 }
 
 int MboxCondSend(int mboxID, void *msg, int msgSize) {
