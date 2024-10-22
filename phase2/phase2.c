@@ -43,9 +43,9 @@ typedef struct mbox {
 
 
 // GLOBAL VARIABLES
-static pcb * proc_table[MAXPROC];
-static mslot * all_mslots[MAXSLOTS];
-static mbox * all_mboxes[MAXMBOX];
+static pcb proc_table[MAXPROC];
+static mslot all_mslots[MAXSLOTS];
+static mbox all_mboxes[MAXMBOX];
 void (*systemCallVec[MAXSYSCALLS])(USLOSS_Sysargs *args);
    
 
@@ -113,10 +113,10 @@ void phase2_init() {
     check_kernel_mode("phase2_init");
     unsigned int old_psr = disable_interrupts();
     
-    // memset all the arrays to 0?
-    memset(proc_table, 0, sizeof(proc_table));
-    memset(all_mslots, 0, sizeof(all_mslots));
-    memset(all_mboxes, 0, sizeof(all_mboxes));
+    // memset all the arrays to 0
+    for (int i=0; i < MAXPROC; i++) memset(&proc_table[i], 0, sizeof(struct pcb));
+    for (int i=0; i < MAXSLOTS; i++) memset(&all_mslots[i], 0, sizeof(struct mslot));
+    for (int i=0; i < MAXMBOX; i++) memset(&all_mboxes[i], 0, sizeof(struct mbox));
 
     // intialize array of function pointers
 
@@ -140,7 +140,7 @@ void phase2_start_service_processes() {
 
 int find_next_empty_mbox() {
     for (int i=0; i < MAXMBOX; i++) {
-        if (!all_mboxes[i]->is_alive) return i;
+        if (!all_mboxes[i].is_alive) return i;
     } return -1;
 }
 
@@ -154,10 +154,10 @@ int MboxCreate(int numSlots, int slotSize) {
     if (numSlots < 0 || slotSize < 0) return -1;
 
     if (mbox_id >= 0) {
-        mbox * mbox = all_mboxes[mbox_id];
-        mbox->is_alive = 1;
-        mbox->numSlots = numSlots;
-        mbox->maxMsgSize = slotSize;
+        mbox mbox = all_mboxes[mbox_id];
+        mbox.is_alive = 1;
+        mbox.numSlots = numSlots;
+        mbox.maxMsgSize = slotSize;
     }
     // deal with assigning tail pointer?
 
@@ -172,15 +172,15 @@ int MboxRelease(int mboxID) {
     check_kernel_mode("MboxRelease");
     unsigned int old_psr = disable_interrupts();
 
-    mbox * mbox = all_mboxes[mboxID];
-    if (!mbox->is_alive) return -1;
+    mbox mbox = all_mboxes[mboxID];
+    if (!mbox.is_alive) return -1;
 
     // release mslots
     /*mslot * cur_mslot = mbox->mslots->head;*/
     /*while ((cur_mslot = cur_mslot->next)) cur_mslot->is_alive = 0;*/
 
     // set everything to 0
-    memset(mbox, 0, sizeof(struct mbox));
+    memset(&mbox, 0, sizeof(struct mbox));
 
 
     // restore interrupts
@@ -190,7 +190,7 @@ int MboxRelease(int mboxID) {
 
 int find_next_empty_mslot() {
     for (int i=0; i < MAXSLOTS; i++) {
-        if (!all_mslots[i]->is_alive) return i;
+        if (!all_mslots[i].is_alive) return i;
     } return -1;
 }
 
@@ -206,7 +206,7 @@ void* popTail(Node** head) {
         Node * cur = *head;
         while (cur->next->next) { cur = cur->next; }
 
-        void * thing_toReturn = cur->next->thing;
+        thing_toReturn = cur->next->thing;
         cur->next = NULL;
     } return thing_toReturn;
 }
@@ -218,45 +218,45 @@ int MboxSend(int mboxID, void *msg, int messageSize) {
     unsigned int old_psr = disable_interrupts();
 
     // retrieve mailbox and mslot id
-    mbox * mbox = all_mboxes[mboxID];
+    mbox mbox = all_mboxes[mboxID];
     int mslotID = find_next_empty_mslot();
 
     // check for invalid slot id
     if (mslotID < 0) return -2;
 
     // check for invalid mailbox id
-    if (!(mboxID >= 0 && mboxID < MAXMBOX) || !mbox->is_alive) return -1;
+    if (!(mboxID >= 0 && mboxID < MAXMBOX) || !mbox.is_alive) return -1;
 
     // if no remaining slots, add to producer queue and block
-    if (!mbox->numSlots) {
+    if (!mbox.numSlots) {
         int pid = getpid();
-        pcb * proc = proc_table[pid % MAXPROC];
+        pcb proc = proc_table[pid % MAXPROC];
         
         // create new proc node and add producer proc to head
-        Node proc_node = {proc, mbox->producers};
-        mbox->producers = &proc_node;
+        Node proc_node = {&proc, mbox.producers};
+        mbox.producers = &proc_node;
         
         blockMe();
     } else {
         // get next mslot
-        mslot * mslot = all_mslots[mslotID];
+        mslot mslot = all_mslots[mslotID];
 
         // add message to mailslot if there is an available slot
-        strcpy(mslot->msg, (char *) msg);
-        mslot->is_alive = 1;
+        strcpy(mslot.msg, (char *) msg);
+        mslot.is_alive = 1;
         
-        mbox->numSlots--;
+        mbox.numSlots--;
 
         // add mslot to mbox mslots
-        Node mslot_node = {mslot, mbox->mslots};
-        mbox->mslots = &mslot_node;
+        Node mslot_node = {&mslot, mbox.mslots};
+        mbox.mslots = &mslot_node;
 
     }
 
     // if there is a consumer waiting to consume a message, wake up
     // the tail of the consumer queue
-    if (mbox->consumers) {
-        pcb* proc_toBeUnblocked = popTail(&mbox->consumers);
+    if (mbox.consumers) {
+        pcb* proc_toBeUnblocked = popTail(&mbox.consumers);
         unblockProc(proc_toBeUnblocked->pid);
     }
 
@@ -273,25 +273,40 @@ int MboxRecv(int mboxID, void *msg, int maxMsgSize) {
     check_kernel_mode("MboxRecv");
     unsigned int old_psr = disable_interrupts();
 
-    mbox * mbox = all_mboxes[mboxID];
+    mbox mbox = all_mboxes[mboxID];
     int msgSize = strlen((char *) msg);
 
     // check for invalid mailbox id
     if (!(mboxID >= 0 && mboxID < MAXMBOX)
-            || !mbox->is_alive
+            || !mbox.is_alive
             || msgSize >= maxMsgSize)
         return -1;
 
 
     // check if there are any messages to be consumed
-    if (mbox->mslots) {
+    if (mbox.mslots) {
         // consume message
-        mslot* msg_toReceive = popTail(&mbox->mslots);
+        mslot* msg_toReceive = popTail(&mbox.mslots);
         msg = &msg_toReceive->msg;
+    } else {
+        // add consumer to consumer queue and block
+        int pid = getpid();
+        pcb proc = proc_table[pid % MAXPROC];
+        
+        // create new proc node and add consumer proc to head
+        Node proc_node = {&proc, mbox.consumers};
+        mbox.consumers = &proc_node;
+        
+        blockMe();
     }
 
+    // zero-slot mailboxes?
 
 
+
+
+    // if msg size is zero, set msg to NULL
+    if (msgSize == 0) msg = NULL;
 
     // restore interrupts
     restore_interrupts(old_psr);
@@ -305,15 +320,15 @@ int MboxCondSend(int mboxID, void *msg, int msgSize) {
     check_kernel_mode("MboxCondSend");
     unsigned int old_psr = disable_interrupts();
 
-    mbox * mbox = all_mboxes[mboxID];
+    mbox mbox = all_mboxes[mboxID];
 
     // check if the consumer queue is empty
-    if (mbox->consumers) blockMe(); // and no space available check
+    if (mbox.consumers) blockMe(); // and no space available check
 
     if (find_next_empty_mslot() < 0) return -2;
 
     // check for invalid mailbox id
-    if (!(mboxID >= 0 && mboxID < MAXMBOX) || !mbox->is_alive) return -2;
+    if (!(mboxID >= 0 && mboxID < MAXMBOX) || !mbox.is_alive) return -2;
     
     // restore interrupts
     restore_interrupts(old_psr);
@@ -327,12 +342,12 @@ int MboxCondRecv(int mboxID, void *msg, int maxMsgSize) {
     check_kernel_mode("MboxCondRecv");
 
     unsigned int old_psr = disable_interrupts();
-    mbox * mbox = all_mboxes[mboxID];
+    mbox mbox = all_mboxes[mboxID];
     int msgSize = strlen((char *) msg);
 
     // check for invalid mailbox id
     if (!(mboxID >= 0 && mboxID < MAXMBOX)
-            || !mbox->is_alive
+            || !mbox.is_alive
             || msgSize >= maxMsgSize)
         return -1;
 
