@@ -59,6 +59,14 @@ void (*systemCallVec[MAXSYSCALLS])(USLOSS_Sysargs *args);
 
 // Consumers block when there are no queued messages
 
+
+// helper for adding producers/consumers to queues
+Node enqueueMe(Node head) {
+
+    pcb proc = proc_table[getpid() % MAXPROC];
+    Node proc_node = {&proc, head};
+}
+
 // disable interrupts
 unsigned int disable_interrupts() {
     
@@ -234,14 +242,9 @@ int MboxSendAlt(int mboxID, void *msg, int messageSize) {
 
     // if allowed mslots are depleted, block until one opens
     if (!mbox.numSlots) {
-        // get process from proc table
-        pcb proc = proc_table[getpid() % MAXPROC];
 
-        // create proc node and add to head of producer queue
-        Node proc_node = {&proc, mbox.producers};
-        mbox.producers = &proc_node;
-
-        // block producer process
+        // call helper to enqueue and block
+        mbox.producers = &enqueueMe(mbox.producers);
         blockMe();
     }
 
@@ -325,6 +328,58 @@ int MboxSend(int mboxID, void *msg, int messageSize) {
     restore_interrupts(old_psr);
     return 0; // success
 }
+
+// newer (fixed?) version
+//
+// there's a high likelyhood that some of these commented chunks will
+// be copied into helper functions that will be used by this function 
+// as well as mboxCondRecv()
+int MboxRecvAlt(int mboxID, void *msg, int maxMsgSize) {
+
+    // check kernel mode and disable interrupts
+    check_kernel_mode("MboxRecv");
+    unsigned int old_psr = disable_interrupts();
+
+    // get mbox and size of msg
+    mbox mbox = all_mboxes[mboxID];
+    int msgSize = strlen((char *) msg);
+
+    // check for invalid mailbox id, dead mailbox, and invalid msg size
+    if (!(mboxID >= 0 && mboxID < MAXMBOX)
+            || !mbox.is_alive
+            || msgSize >= maxMsgSize)
+        return -1;
+
+    // if there are no messages waiting in mslots, then add CRP to consumer queue & block
+    if (!mbox.mslots) {
+        
+        // call helper to enqueue and block
+        mbox.consumers = &enqueueMe(mbox.consumers);
+        blockMe();
+    }
+
+    // this executes when the current consumer wakes up due to a mbox release without any new slots gaining messages
+    if (!mbox.mslots) return -1;
+
+    // consume message and increment available mslots in the mbox
+    mslot* msg_toReceive = popTail(&mbox.mslots);
+    msg = &msg_toReceive->msg;
+    mbox.numSlots++;
+
+    // free mslot?
+        
+    // if a producer is waiting, wake it to write into the newly empty mslot
+    if (mbox.producers) {
+        pcb* proc_toBeUnblocked = popTail(&mbox.producers);
+        unblockProc(proc_toBeUnblocked->pid);
+    }
+
+    // restore interrupts
+    restore_interrupts(old_psr);
+    
+    return 0; //success
+}
+
 
 // receive a message from a mailslot in a mailbox into the process
 // which is consuming it
