@@ -211,6 +211,67 @@ void* popTail(Node** head) {
     } return thing_toReturn;
 }
 
+
+// newer (fixed?) version
+//
+// there's a high likelyhood that some of these commented chunks will
+// be copied into helper functions that will be used by this function 
+// as well as mboxCondSend()
+int MboxSendAlt(int mboxID, void *msg, int messageSize) {
+
+    // check kernel mode and disable interrupts
+    check_kernel_mode("MboxSend");
+    unsigned int old_psr = disable_interrupts();
+
+    // retrieve mslot ID, mslot, and mbox
+    int mslotID = find_next_empty_mslot();
+    mslot mslot = all_mslots[mslotID];
+    mbox mbox = all_mboxes[mboxID];
+    
+    // check preemptive return conditions
+    if (mslotID < 0) return -2;                                                 // invalid mslot ID
+    if (!(mboxID >= 0 && mboxID < MAXMBOX) || !mbox.is_alive) return -1;        // invalid mbox ID
+
+    // if allowed mslots are depleted, block until one opens
+    if (!mbox.numSlots) {
+        // get process from proc table
+        pcb proc = proc_table[getpid() % MAXPROC];
+
+        // create proc node and add to head of producer queue
+        Node proc_node = {&proc, mbox.producers};
+        mbox.producers = &proc_node;
+
+        // block producer process
+        blockMe();
+    }
+
+    // this executes when the current producer wakes up due to a mbox release without any new slots opening
+    if (!mbox.numSlots) return -1;
+
+    // copy the message into the proper mailslot and decrement the available mslot counter
+    strcpy(mslot.msg, (char *) msg);
+    mslot.is_alive = 1;   
+    mbox.numSlots--;
+
+    // add mslot to mbox mslots
+    Node mslot_node = {&mslot, mbox.mslots};
+    mbox.mslots = &mslot_node;
+
+    // if there is a consumer waiting to consume a message, wake up the tail of the consumer queue
+    if (mbox.consumers) {
+        pcb* proc_toBeUnblocked = popTail(&mbox.consumers);
+        unblockProc(proc_toBeUnblocked->pid);
+    }
+
+    // restore interrupts
+    restore_interrupts(old_psr);
+
+    return 0; // success
+}
+
+
+
+// might be deleting this if the above function (newer version) works
 int MboxSend(int mboxID, void *msg, int messageSize) {
 
     // check kernel mode and disable interrupts
@@ -285,9 +346,17 @@ int MboxRecv(int mboxID, void *msg, int maxMsgSize) {
 
     // check if there are any messages to be consumed
     if (mbox.mslots) {
-        // consume message
+        // consume message and increment available mslots in the mbox
         mslot* msg_toReceive = popTail(&mbox.mslots);
         msg = &msg_toReceive->msg;
+        mbox.numSlots++;
+        
+        // if a producer is waiting, wake it to write into the newly empty mslot
+        if (mbox.producers) {
+            pcb* proc_toBeUnblocked = popTail(&mbox.producers);
+            unblockProc(proc_toBeUnblocked->pid);
+        }
+
     } else {
         // add consumer to consumer queue and block
         int pid = getpid();
