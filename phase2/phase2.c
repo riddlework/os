@@ -13,11 +13,13 @@ typedef struct node {
 
 typedef struct pcb {
     int pid; // process id
+    struct pcb * next;
 } pcb;
 
 typedef struct mslot {
     char msg[MAX_MESSAGE];
     int          is_alive;
+    struct mslot *   next;
 } mslot;
 
 typedef struct mbox {
@@ -25,9 +27,9 @@ typedef struct mbox {
     int     numSlots;
     int   maxMsgSize;
 
-    Node *    mslots;    // queue of mslot structs
-    Node * consumers;    // queue of consumer processes
-    Node * producers;    // queue of producer processes
+    mslot *   mslots;    // queue of mslot structs
+    pcb * consumers;    // queue of consumer processes
+    pcb * producers;    // queue of producer processes
 
 } mbox;
 /****************************************************/
@@ -129,26 +131,38 @@ int find_next_empty_mslot() {
 }
 
 // remove and return the tail -- list will always have at least one node
-void* popTail(Node** head) {
-    void* thing_toReturn = NULL;
-    if (!*head) printf("NULL\n");
-    else if (!(*head)->next) {
+pcb * popTailProc(pcb** head) {
+    // list will never be empty
+    pcb * proc_toReturn = NULL;
+    if (!(*head)->next) {
         // list with one node
-        thing_toReturn = (*head)->thing;
+        proc_toReturn = *head;
         *head = NULL;
     } else {
         // list with more than one node
-        Node * cur = *head;
-        /*printf("cur->thing: %s\n", (char *) cur->thing);*/
-        /*printf("cur->next->thing: %d\n", *((int *) cur->next->thing));*/
-        /*printf("cur->next = %d\n", cur->next == NULL);*/
-        while (cur->next->next) { 
-            cur = cur->next;
-        }
+        pcb * cur = *head;
+        while (cur->next->next) { cur = cur->next; }
 
-        thing_toReturn = cur->next->thing;
+        proc_toReturn = cur->next;
         cur->next = NULL;
-    } return thing_toReturn;
+    } return proc_toReturn;
+}
+
+mslot * popTailMslot(mslot** head) {
+    // list will never be empty
+    mslot * mslot_toReturn = NULL;
+    if (!(*head)->next) {
+        // list with one node
+        mslot_toReturn = *head;
+        *head = NULL;
+    } else {
+        // list with more than one node
+        mslot * cur = *head;
+        while (cur->next->next) { cur = cur->next; }
+
+        mslot_toReturn = cur->next;
+        cur->next = NULL;
+    } return mslot_toReturn;
 }
 
 int sendHelp(int mboxID, void *msg, int msgSize, int block) {
@@ -170,9 +184,9 @@ int sendHelp(int mboxID, void *msg, int msgSize, int block) {
         int pid = getpid();
         pcb proc = proc_table[pid % MAXPROC];
 
-        // create new proc node and add producer proc to head
-        Node proc_node = {&proc, mbox->producers};
-        mbox->producers = &proc_node;
+        // add proc to head of queue 
+        proc.next = mbox->producers;
+        mbox->producers = &proc;
 
         // block or fall through
         if (block) {
@@ -187,7 +201,7 @@ int sendHelp(int mboxID, void *msg, int msgSize, int block) {
         return -1;
     } else if (!mbox->numSlots) {
         // consume message
-        pcb* proc_toBeUnblocked = popTail(&mbox->consumers);
+        pcb* proc_toBeUnblocked = popTailProc(&mbox->consumers);
         unblockProc(proc_toBeUnblocked->pid);
     } else {
         // copy the message into the proper mailslot and decrement the available mslot counter
@@ -195,17 +209,13 @@ int sendHelp(int mboxID, void *msg, int msgSize, int block) {
         mslot->is_alive = 1;   
         mbox->numSlots--;
 
-        // add mslot to mbox mslots
-        /*printf("mbos->mslots: %d\n", mbox->mslots==NULL);*/
-        Node mslot_node = {mslot, mbox->mslots};
-        mbox->mslots = &mslot_node;
-        /*printf("mslot_node->next is null: %d\n", mslot_node.next == NULL);*/
-        /*printf("mbox->mslots->next is null: %d\n", mbox->mslots->next == NULL);*/
-
+        // add mslot to mbox mslots -- end of queue (head of list)
+        mslot->next = mbox->mslots;
+        mbox->mslots = mslot;
 
         // if there is a consumer waiting to consume a message, wake up the tail of the consumer queue
         if (mbox->consumers) {
-            pcb* proc_toBeUnblocked = popTail(&mbox->consumers);
+            pcb* proc_toBeUnblocked = popTailProc(&mbox->consumers);
             unblockProc(proc_toBeUnblocked->pid);
         }
     }
@@ -238,8 +248,8 @@ int recvHelp(int mboxID, void *msg, int maxMsgSize, int block) {
         pcb proc = proc_table[pid % MAXPROC];
 
         // create new proc node and add producer proc to head
-        Node proc_node = {&proc, mbox->consumers};
-        mbox->consumers = &proc_node;
+        proc.next = mbox->producers;
+        mbox->producers = &proc;
 
         // block or fall through
         if (block) {
@@ -254,17 +264,14 @@ int recvHelp(int mboxID, void *msg, int maxMsgSize, int block) {
 
     // consume message and increment available mslots in the mbox
     if (mbox->numSlots) {
-        printf("mbox->mslots->next is null: %d\n", mbox->mslots->next == NULL);
-        printf("msg: %s\n", ((struct mslot *) mbox->mslots->thing)->msg);
-        printf("msg: %s\n", ((struct mslot *) mbox->mslots->next->thing)->msg);
-        mslot* msg_toReceive = popTail(&mbox->mslots);
-        msg = &msg_toReceive->msg;
+        mslot * msg_toReceive = popTailMslot(&mbox->mslots);
+        strcpy(msg, msg_toReceive->msg);
         mbox->numSlots++;
     }
         
     // if a producer is waiting, wake it
     if (mbox->producers) {
-        pcb* proc_toBeUnblocked = popTail(&mbox->producers);
+        pcb* proc_toBeUnblocked = popTailProc(&mbox->producers);
         unblockProc(proc_toBeUnblocked->pid);
     }
 
@@ -310,19 +317,19 @@ int MboxRelease(int mboxID) {
 
     // release consumers
     while (mbox->consumers) {
-        pcb* proc_toBeUnblocked = popTail(&mbox->consumers);
+        pcb* proc_toBeUnblocked = popTailProc(&mbox->consumers);
         unblockProc(proc_toBeUnblocked->pid);
     }
 
     // release producers
     while (mbox->producers) {
-        pcb* proc_toBeUnblocked = popTail(&mbox->producers);
+        pcb* proc_toBeUnblocked = popTailProc(&mbox->producers);
         unblockProc(proc_toBeUnblocked->pid);
     }
 
     // release mslots
     while (mbox->mslots) {
-        mslot* mslot_toBeReleased = popTail(&mbox->mslots);
+        mslot* mslot_toBeReleased = popTailMslot(&mbox->mslots);
         memset(mslot_toBeReleased->msg, 0, sizeof(mslot_toBeReleased->msg));
         mslot_toBeReleased->is_alive = 0;
     }
