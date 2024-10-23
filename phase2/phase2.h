@@ -39,7 +39,6 @@ extern int MboxCondRecv(int mbox_id, void *msg_ptr, int msg_max_size);
 // type = interrupt device type, unit = # of device (when more than one),
 // status = where interrupt handler puts device's status register.
 extern void     waitDevice(int type, int unit, int *status);
-extern void wakeupByDevice(int type, int unit, int status);
 
 // 
 extern void (*systemCallVec[])(USLOSS_Sysargs *args);
