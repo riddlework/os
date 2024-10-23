@@ -5,6 +5,19 @@
 #include <stdio.h>
 
 
+/* INTERRUPT HANDLER STUBS */
+void clockHandler(int dev, void *arg);
+void diskHandler(int dev, void *arg);
+void termHandler(int dev, void *arg);
+void syscallHandler(USLOSS_Sysargs * args);
+
+
+/* MBOX STUBS */
+int MboxCreate(int numSlots, int slotSize);
+
+/*****************************************/
+
+
 /* STRUCT DEFINITIONS */
 typedef struct node {
     void * thing;
@@ -40,6 +53,17 @@ static pcb proc_table[MAXPROC];
 static mslot all_mslots[MAXSLOTS];
 static mbox all_mboxes[MAXMBOX];
 void (*systemCallVec[MAXSYSCALLS])(USLOSS_Sysargs *args);
+int curTime;
+
+
+// declare mailbox IDs for devices
+int clockMboxID; 
+int disk0MboxID;
+int disk1MboxID;
+int term0MboxID;
+int term1MboxID;
+int term2MboxID;
+int term3MboxID;
 /****************************************************/
    
 // disable interrupts
@@ -108,6 +132,28 @@ void phase2_init() {
     // intialize array of function pointers
     for (int i=0; i < MAXSYSCALLS; i++) systemCallVec[i] = nullsys;
 
+    // fill interrupt vector
+    USLOSS_IntVec[USLOSS_CLOCK_INT] = clockHandler;
+    USLOSS_IntVec[USLOSS_DISK_INT] = diskHandler;
+    USLOSS_IntVec[USLOSS_TERM_INT] = termHandler;
+    systemCallVec[0] = syscallHandler;
+
+    // create clock mbox
+    clockMboxID = MboxCreate(1, sizeof(int));
+
+    // create disk mboxes
+    disk0MboxID = MboxCreate(1, sizeof(int));
+    disk1MboxID = MboxCreate(1, sizeof(int));
+
+    // create terminal mboxes
+    term0MboxID = MboxCreate(1, sizeof(int));
+    term1MboxID = MboxCreate(1, sizeof(int));
+    term2MboxID = MboxCreate(1, sizeof(int));
+    term3MboxID = MboxCreate(1, sizeof(int));
+
+    // get the current time 
+    curTime = currentTime();
+
     // restore interrupts
     restore_interrupts(old_psr);
 }
@@ -141,7 +187,9 @@ pcb * popTailProc(pcb** head) {
     } else {
         // list with more than one node
         pcb * cur = *head;
-        while (cur->next->next) { cur = cur->next; }
+        while (cur->next->next) { 
+            printf("here->popProc\n");
+            cur = cur->next; }
 
         proc_toReturn = cur->next;
         cur->next = NULL;
@@ -158,11 +206,43 @@ mslot * popTailMslot(mslot** head) {
     } else {
         // list with more than one node
         mslot * cur = *head;
-        while (cur->next->next) { cur = cur->next; }
+        while (cur->next->next) { 
+            /*printf("here->popMslot\n");*/
+            cur = cur->next; }
 
         mslot_toReturn = cur->next;
         cur->next = NULL;
     } return mslot_toReturn;
+}
+
+void dumpMbox(int mboxID) {
+    mbox * mbox = &all_mboxes[mboxID];
+    printf("Mbox ID: %d\n", mboxID);
+    printf("is_alive: %d\n", mbox->is_alive);
+    printf("numSlots: %d\n", mbox->numSlots);
+    printf("maxMsgSize: %d\n", mbox->maxMsgSize);
+
+    // print mslots
+    mslot * cur = mbox->mslots;
+    while (cur) {
+        printf("msg: %s\n", cur->msg);
+        printf("is_alive: %d\n", cur->is_alive);
+        cur = cur->next;
+    }
+
+    // print consumers
+    pcb * curProc = mbox->consumers;
+    while (curProc) {
+        printf("pid: %d\n", curProc->pid);
+        curProc = curProc->next;
+    }
+
+    // print producers
+    curProc = mbox->producers;
+    while (curProc) {
+        printf("pid: %d\n", curProc->pid);
+        curProc = curProc->next;
+    }
 }
 
 int sendHelp(int mboxID, void *msg, int msgSize, int block) {
@@ -182,11 +262,12 @@ int sendHelp(int mboxID, void *msg, int msgSize, int block) {
     // if allowed mslots are depleted, block until one opens
     if (!mbox->numSlots) {
         int pid = getpid();
-        pcb proc = proc_table[pid % MAXPROC];
+        pcb * proc = &proc_table[pid % MAXPROC];
 
         // add proc to head of queue 
-        proc.next = mbox->producers;
-        mbox->producers = &proc;
+        proc->pid = pid;
+        proc->next = mbox->producers;
+        mbox->producers = proc;
 
         // block or fall through
         if (block) {
@@ -200,7 +281,7 @@ int sendHelp(int mboxID, void *msg, int msgSize, int block) {
     if (!mbox->is_alive) {
         return -1;
     } else if (!mbox->numSlots) {
-        // consume message
+        // wake up a process if the mailbox is released
         pcb* proc_toBeUnblocked = popTailProc(&mbox->consumers);
         unblockProc(proc_toBeUnblocked->pid);
     } else {
@@ -242,14 +323,14 @@ int recvHelp(int mboxID, void *msg, int maxMsgSize, int block) {
 
     // if there are no messages waiting in mslots, then add CRP to consumer queue & block
     if (!mbox->mslots) {
-        
         // call helper to enqueue and block
         int pid = getpid();
-        pcb proc = proc_table[pid % MAXPROC];
+        pcb * proc = &proc_table[pid % MAXPROC];
 
         // create new proc node and add producer proc to head
-        proc.next = mbox->producers;
-        mbox->producers = &proc;
+        proc->pid = pid;
+        proc->next = mbox->consumers;
+        mbox->consumers = proc;
 
         // block or fall through
         if (block) {
@@ -263,8 +344,11 @@ int recvHelp(int mboxID, void *msg, int maxMsgSize, int block) {
     if (!mbox->is_alive) return -1;
 
     // consume message and increment available mslots in the mbox
-    if (mbox->numSlots) {
+    int msgLen;
+    if (mbox->mslots) {
+        dumpMbox(mboxID);
         mslot * msg_toReceive = popTailMslot(&mbox->mslots);
+        msgLen = strlen(msg_toReceive->msg);
         strcpy(msg, msg_toReceive->msg);
         mbox->numSlots++;
     }
@@ -277,7 +361,7 @@ int recvHelp(int mboxID, void *msg, int maxMsgSize, int block) {
 
     // restore interrupts
     restore_interrupts(old_psr);
-    return 0; // success
+    return msgLen + 1; // +1 for null terminator
 }
 
 /****************************************************/
@@ -384,6 +468,96 @@ int MboxCondRecv(int mboxID, void *msg, int maxMsgSize) {
 }
 /****************************************************/
 
+
+/* INTERRUPT HANDLER FUNCTIONS */
+
+void syscallHandler(USLOSS_Sysargs * args) {
+    // check for kernel mode
+    check_kernel_mode("syscallHandler");
+
+    // disable interrupts
+    unsigned int old_psr = disable_interrupts();
+
+    // do stuff here
+
+    // restore interrupts
+    restore_interrupts(old_psr);
+
+}
+
+void clockHandler(int dev, void *arg) {
+    // check for kernel mode
+    check_kernel_mode("clockHandler");
+
+    // disable interrupts
+    unsigned int old_psr = disable_interrupts();
+    
+    int newTime = currentTime();
+
+    if (curTime - newTime >= 100) {
+        // send to clock mailbox
+        MboxCondSend(clockMboxID, &newTime, sizeof(int));
+    }
+
+    // call the dispatcher
+    dispatcher();
+
+    // restore interrupts
+    restore_interrupts(old_psr);
+}
+
+void diskHandler(int dev, void *arg) {
+    // check for kernel mode
+    check_kernel_mode("diskHandler");
+
+    // disable interrupts
+    unsigned int old_psr = disable_interrupts();
+
+    // cast arg pointer to integer directly
+    int unitNo = (int)(long) arg;
+    
+    // send message to the appropriate disk mailbox
+    if (unitNo == 0) {
+        // send to disk0 mailbox
+        MboxCondSend(disk0MboxID, &unitNo, sizeof(int));
+    } else if (unitNo == 1) {
+        // send to disk1 mailbox
+        MboxCondSend(disk1MboxID, &unitNo, sizeof(int));
+    }
+
+    // restore interrupts
+    restore_interrupts(old_psr);
+}
+
+void termHandler(int dev, void *arg) {
+    // check for kernel mode
+    check_kernel_mode("termHandler");
+
+    // disable interrupts
+    unsigned int old_psr = disable_interrupts();
+
+    // cast arg pointer to integer directly
+    int unitNo = (int)(long) arg;
+
+    //send message to appropriate terminal mailbox
+    if (unitNo == 0) {
+        // send to term0 mailbox
+        MboxCondSend(term0MboxID, &unitNo, sizeof(int));
+    } else if (unitNo == 1) {
+        // send to term1 mailbox
+        MboxCondSend(term1MboxID, &unitNo, sizeof(int));
+    } else if (unitNo == 2) {
+        // send to term2 mailbox
+        MboxCondSend(term2MboxID, &unitNo, sizeof(int));
+    } else if (unitNo == 3) {
+        // send to term3 mailbox
+        MboxCondSend(term3MboxID, &unitNo, sizeof(int));
+    }
+    
+    // restore interrupts
+    restore_interrupts(old_psr);
+}
+
 void waitDevice(int type, int unit, int *status) {
 
     // check for kernel mode
@@ -392,12 +566,56 @@ void waitDevice(int type, int unit, int *status) {
     // disable interrupts
     unsigned int old_psr = disable_interrupts();
 
-    // error checking
     
+    // check for valid type
+    if (type != USLOSS_CLOCK_DEV &&
+        type != USLOSS_DISK_DEV  &&
+        type != USLOSS_TERM_DEV) {
+        printf("waitDevice(): invalid device type\n");
+        USLOSS_Halt(1);
+    }
+
+    // check for valid unit
+    if (type == USLOSS_CLOCK_DEV && unit != 0) {
+        printf("waitDevice(): invalid unit number for clock device\n");
+        USLOSS_Halt(1);
+    } else if (type == USLOSS_DISK_DEV && (unit < 0 || unit >= USLOSS_DISK_UNITS)) {
+        printf("waitDevice(): invalid unit number for disk device\n");
+        USLOSS_Halt(1);
+    } else if (type == USLOSS_TERM_DEV && (unit < 0 || unit >= USLOSS_TERM_UNITS)) {
+        printf("waitDevice(): invalid unit number for terminal device\n");
+        USLOSS_Halt(1);
+    }
+
+
+    // receive from appropriate mailbox based on type
+    if (type == USLOSS_CLOCK_DEV) {
+        MboxRecv(clockMboxID, status, sizeof(int));
+    } else if (type == USLOSS_DISK_DEV) {
+        if (unit == 0) {
+            MboxRecv(disk0MboxID, status, sizeof(int));
+        } else if (unit == 1) {
+            MboxRecv(disk1MboxID, status, sizeof(int));
+        }    
+    } else if (type == USLOSS_TERM_DEV) {
+        if (unit == 0) {
+            MboxRecv(term0MboxID, status, sizeof(int));
+        } else if (unit == 1) {
+            MboxRecv(term1MboxID, status, sizeof(int));
+        } else if (unit == 2) {
+            MboxRecv(term2MboxID, status, sizeof(int));
+        } else if (unit == 3) {
+            MboxRecv(term3MboxID, status, sizeof(int));
+        } 
+    }
+
+    // install syscall handlers on syscall vec
+    // fill the status pointer?
 
     // restore interrupts
     restore_interrupts(old_psr);
 
 }
+
 
 
