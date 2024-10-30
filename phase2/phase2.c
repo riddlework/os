@@ -105,8 +105,6 @@ static void nullsys() {
     unsigned int old_psr = disable_interrupts();
 
     // print out error message
-    /*int syscallNum = systemCallVec[USLOSS_SYSCALL_INT];*/
-    /*int syscallNum = (int) USLOSS_IntVec[USLOSS_SYSCALL_INT];*/
     int syscallNum = 0;
     printf("nullsys(): Program called an unimplemented syscall.  syscall no: %d  PSR: %d\n", syscallNum, USLOSS_PsrGet());
 
@@ -187,9 +185,7 @@ pcb * popTailProc(pcb** head) {
     } else {
         // list with more than one node
         pcb * cur = *head;
-        while (cur->next->next) { 
-            printf("here->popProc\n");
-            cur = cur->next; }
+        while (cur->next->next) { cur = cur->next; }
 
         proc_toReturn = cur->next;
         cur->next = NULL;
@@ -206,9 +202,7 @@ mslot * popTailMslot(mslot** head) {
     } else {
         // list with more than one node
         mslot * cur = *head;
-        while (cur->next->next) { 
-            /*printf("here->popMslot\n");*/
-            cur = cur->next; }
+        while (cur->next->next) { cur = cur->next; }
 
         mslot_toReturn = cur->next;
         cur->next = NULL;
@@ -264,7 +258,7 @@ int sendHelp(int mboxID, void *msg, int msgSize, int block) {
         int pid = getpid();
         pcb * proc = &proc_table[pid % MAXPROC];
 
-        // add proc to head of queue 
+        // add proc to end of queue
         proc->pid = pid;
         proc->next = mbox->producers;
         mbox->producers = proc;
@@ -346,7 +340,6 @@ int recvHelp(int mboxID, void *msg, int maxMsgSize, int block) {
     // consume message and increment available mslots in the mbox
     int msgLen;
     if (mbox->mslots) {
-        dumpMbox(mboxID);
         mslot * msg_toReceive = popTailMslot(&mbox->mslots);
         msgLen = strlen(msg_toReceive->msg);
         strcpy(msg, msg_toReceive->msg);
@@ -495,8 +488,12 @@ void clockHandler(int dev, void *arg) {
     int newTime = currentTime();
 
     if (curTime - newTime >= 100) {
-        // send to clock mailbox
-        MboxCondSend(clockMboxID, &newTime, sizeof(int));
+        // use USLOSS_DeviceInput to to get the status
+        int * status;
+        int success = USLOSS_DeviceInput(USLOSS_CLOCK_DEV, 0, status);
+
+        // send status to clock mailbox
+        MboxCondSend(clockMboxID, status, sizeof(int));
     }
 
     // call the dispatcher
@@ -518,9 +515,17 @@ void diskHandler(int dev, void *arg) {
     
     // send message to the appropriate disk mailbox
     if (unitNo == 0) {
+        // Use USLOSS_DeviceInput to get the status
+        int * status;
+        int success = USLOSS_DeviceInput(USLOSS_DISK_DEV, 0, status);
+
         // send to disk0 mailbox
         MboxCondSend(disk0MboxID, &unitNo, sizeof(int));
     } else if (unitNo == 1) {
+        // Use USLOSS_DeviceInput to get the status
+        int * status;
+        int success = USLOSS_DeviceInput(USLOSS_DISK_DEV, 1, status);
+
         // send to disk1 mailbox
         MboxCondSend(disk1MboxID, &unitNo, sizeof(int));
     }
@@ -541,15 +546,31 @@ void termHandler(int dev, void *arg) {
 
     //send message to appropriate terminal mailbox
     if (unitNo == 0) {
+        // use USLOSS_DeviceInput to get the status
+        int * status;
+        int success = USLOSS_DeviceInput(USLOSS_TERM_DEV, 0, status);
+
         // send to term0 mailbox
         MboxCondSend(term0MboxID, &unitNo, sizeof(int));
     } else if (unitNo == 1) {
+        // use USLOSS_DeviceInput to get the status
+        int * status;
+        int success = USLOSS_DeviceInput(USLOSS_TERM_DEV, 1, status);
+
         // send to term1 mailbox
         MboxCondSend(term1MboxID, &unitNo, sizeof(int));
     } else if (unitNo == 2) {
+        // use USLOSS_DeviceInput to get the status
+        int * status;
+        int success = USLOSS_DeviceInput(USLOSS_TERM_DEV, 2, status);
+
         // send to term2 mailbox
         MboxCondSend(term2MboxID, &unitNo, sizeof(int));
     } else if (unitNo == 3) {
+        // use USLOSS_DeviceInput to get the status
+        int * status;
+        int success = USLOSS_DeviceInput(USLOSS_TERM_DEV, 3, status);
+
         // send to term3 mailbox
         MboxCondSend(term3MboxID, &unitNo, sizeof(int));
     }
