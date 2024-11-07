@@ -2,13 +2,12 @@
 #include "phase1.h"
 #include "phase2.h"
 #include "phase3.h"
-// change these to <> when done
-#include "usloss.h"
-#include "usyscall.h"
+#include <usloss.h>
+#include <usyscall.h>
 
 #include <stdlib.h>
+#include <string.h>
 
-// may want to include stdlib stuff?
 
 // function stubs
 int spork_trampoline(void *arg);
@@ -21,44 +20,27 @@ void kernelSemV(USLOSS_Sysargs *args);
 void kernelGetTimeOfDay(USLOSS_Sysargs *args);
 void kernelGetPID(USLOSS_Sysargs *args);
 
+// structs
+typedef struct semaphore {
+    int value;
+    int is_alive;
+} Semaphore;
 
 // global variables
 int trampoline_Mbox;
-int trampoline_lock;
-int phase3init_lock;
-int phase3ssp_lock;
-int spawn_lock;
-int wait_lock;
-int terminate_lock;
-int semcreate_lock;
-int semp_lock;
-int semv_lock;
-int gettimeofday_lock;
-int getpid_lock;
+int lock;
+Semaphore semaphores[MAXSEMS];
 
 // lock helper functions
-void gain_lock(int lock) { MboxSend(lock, NULL, 0); }
+void gain_lock() { MboxSend(lock, NULL, 0); }
 
-void release_lock(int lock) { MboxRecv(lock, NULL, 0); }
+void release_lock() { MboxRecv(lock, NULL, 0); }
 
 // phase functions
 void phase3_init() {
-    // gain lock
-    gain_lock(phase3init_lock);
-
     // create global mbox
     trampoline_Mbox = MboxCreate(1, sizeof(int (*)(void *)));
-    trampoline_lock = MboxCreate(1,0);
-    phase3init_lock = MboxCreate(1,0);
-    phase3ssp_lock = MboxCreate(1,0);
-    spawn_lock = MboxCreate(1,0);
-    wait_lock = MboxCreate(1,0);
-    terminate_lock = MboxCreate(1,0);
-    semcreate_lock = MboxCreate(1,0);
-    semp_lock = MboxCreate(1,0);
-    semv_lock = MboxCreate(1,0);
-    gettimeofday_lock = MboxCreate(1,0);
-    getpid_lock = MboxCreate(1,0);
+    lock = MboxCreate(1,0);
 
     // fill systemCallVec
     systemCallVec[SYS_SPAWN] = kernelSpawn;
@@ -70,23 +52,22 @@ void phase3_init() {
     systemCallVec[SYS_SEMP] = kernelSemP;
     systemCallVec[SYS_SEMV] = kernelSemV;
     
-    // release lock
-    release_lock(phase3init_lock);
+    // memset semaphore array to 0
+    for (int i=0; i < MAXSEMS; i++) memset(&semaphores[i], 0, sizeof(Semaphore));
 }
 
 void phase3_start_service_processes() {
     // gain lock
-    gain_lock(phase3ssp_lock);
-
+    gain_lock();
 
     // release lock
-    release_lock(phase3ssp_lock);
+    release_lock();
 }
 
 
 void kernelSpawn(USLOSS_Sysargs *args) {
     // gain lock
-    gain_lock(spawn_lock);
+    gain_lock();
     
     // unpack arguments
     int (*func)(void *) = (int (*)(void *)) args->arg1;
@@ -105,32 +86,35 @@ void kernelSpawn(USLOSS_Sysargs *args) {
     else args->arg4 = 0;
 
     // release lock
-    release_lock(spawn_lock);
+    release_lock();
 }
 
 
 int spork_trampoline(void *arg) {
     // gain lock
-    gain_lock(trampoline_lock);
+    gain_lock();
 
-    // change the psr to change to user mode
-    unsigned int old_psr = USLOSS_PsrGet();
-    int psr_status = USLOSS_PsrSet(old_psr & 0b1110);
-    
     // receive from the mailbox
     void *msg;
     MboxRecv(trampoline_Mbox, msg, sizeof(int (*)(void *)));
 
     int (*func)(void *) = (int (*)(void *)) msg;
-    func(arg);
 
-    // release lock
-    release_lock(trampoline_lock);
+    // release lock before going into user mode
+    release_lock();
+
+    // change the psr to change to user mode
+    unsigned int old_psr = USLOSS_PsrGet();
+    int psr_status = USLOSS_PsrSet(old_psr & 0b1110);
+    
+
+    // call func from user mode
+    func(arg);
 }
 
 void kernelWait(USLOSS_Sysargs *args) {
     // gain lock
-    gain_lock(wait_lock);
+    gain_lock();
 
     // call join
     int status;
@@ -143,54 +127,104 @@ void kernelWait(USLOSS_Sysargs *args) {
     else retval = 0;
 
     // release lock
-    release_lock(wait_lock);
+    release_lock();
 }
 
 void kernelTerminate(USLOSS_Sysargs *args){
     // gain lock
-    gain_lock(terminate_lock);
+    gain_lock();
+
+    // call join until it returns -2
+    int status;
+    int retval = 0;
+    while (retval != -2) { retval = join(&status); }
+    
+    // call quit
+    quit(status);
 
     // release lock
-    release_lock(terminate_lock);
+    release_lock();
 }
 
 void kernelSemCreate(USLOSS_Sysargs *args) {
     // gain lock
-    gain_lock(semcreate_lock);
+    gain_lock();
+
+    int value = (int)(long) args->arg1;
+    int sem_id = -1;
+    for (int i=0; i < MAXSEMS; i++) {
+        if (!semaphores[i].is_alive) {
+            sem_id = i;
+            semaphores[sem_id].value = value;
+        }
+    }
+
+    args->arg1 = (void *)(long)sem_id;
+    if (sem_id == -1) args->arg1 = (void *)(long) -1;
+    else args->arg1 = 0;
 
     // release lock
-    release_lock(semcreate_lock);
+    release_lock();
 }
 
+// decrements the semaphore
 void kernelSemP(USLOSS_Sysargs *args) {
     // gain lock
-    gain_lock(semp_lock);
+    gain_lock();
+    
+    // unpack the argument
+    int sem_id = (int)(long)args->arg1;
+
+    // check for invalid id
+    if (sem_id >= MAXSEMS || !semaphores[sem_id].is_alive) {
+        args->arg4 = (void *)(long) -1;
+    } else {
+        // decrement the sempahore
+        semaphores[sem_id].value--;
+    }
+
 
     // release lock
-    release_lock(semp_lock);
+    release_lock();
 }
 
+// increments the semaphore
 void kernelSemV(USLOSS_Sysargs *args) {
     // gain lock
-    gain_lock(semv_lock);
+    gain_lock();
+
+    // unpack the argument
+    int sem_id = (int)(long)args->arg1;
+
+    // check for invalid id
+    if (sem_id >= MAXSEMS || !semaphores[sem_id].is_alive) {
+        args->arg4 = (void *)(long) -1;
+    } else {
+        // decrement the sempahore
+        semaphores[sem_id].value++;
+    }
 
     // release lock
-    release_lock(semv_lock);
+    release_lock();
 }
 
 void kernelGetTimeOfDay(USLOSS_Sysargs *args) {
     // gain lock
-    gain_lock(gettimeofday_lock);
+    gain_lock();
+
+    args->arg1 = (void *)(long) currentTime();
 
     // release lock
-    release_lock(gettimeofday_lock);
+    release_lock();
 }
 
 void kernelGetPID(USLOSS_Sysargs *args) {
     // gain lock
-    gain_lock(getpid_lock);
+    gain_lock();
+
+    args->arg1 = (void *)(long) getpid();
 
     // release lock
-    release_lock(getpid_lock);
+    release_lock();
 }
 
