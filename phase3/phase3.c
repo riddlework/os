@@ -7,6 +7,8 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include <assert.h>
 
 
 // function stubs
@@ -29,18 +31,20 @@ typedef struct semaphore {
 // global variables
 int trampoline_Mbox;
 int lock;
-Semaphore semaphores[MAXSEMS];
+Semaphore all_semaphores[MAXSEMS];
 
 // lock helper functions
-void gain_lock() { MboxSend(lock, NULL, 0); }
+void gain_lock() { MboxCondSend(lock, NULL, 0); }
 
-void release_lock() { MboxRecv(lock, NULL, 0); }
+void release_lock() { MboxCondRecv(lock, NULL, 0); }
 
 // phase functions
 void phase3_init() {
     // create global mbox
-    trampoline_Mbox = MboxCreate(1, sizeof(int (*)(void *)));
     lock = MboxCreate(1,0);
+
+    gain_lock();
+    trampoline_Mbox = MboxCreate(1, sizeof(int (*)(void *)));
 
     // fill systemCallVec
     systemCallVec[SYS_SPAWN] = kernelSpawn;
@@ -53,16 +57,12 @@ void phase3_init() {
     systemCallVec[SYS_SEMV] = kernelSemV;
     
     // memset semaphore array to 0
-    for (int i=0; i < MAXSEMS; i++) memset(&semaphores[i], 0, sizeof(Semaphore));
-}
-
-void phase3_start_service_processes() {
-    // gain lock
-    gain_lock();
-
-    // release lock
+    for (int i=0; i < MAXSEMS; i++) memset(&all_semaphores[i], 0, sizeof(Semaphore));
+    
     release_lock();
 }
+
+void phase3_start_service_processes() { }
 
 
 void kernelSpawn(USLOSS_Sysargs *args) {
@@ -76,9 +76,10 @@ void kernelSpawn(USLOSS_Sysargs *args) {
     int priority = (int)(long) args->arg4;
     char *name = args->arg5;
 
-
     // call trampoline function
     MboxSend(trampoline_Mbox, (void *)func, sizeof(int (*)(void *)));
+
+    // release lock before calling spork
     int retval = spork(name, spork_trampoline, arg, stack_size, priority);
 
     args->arg1 = (void *)(long)retval;
@@ -95,8 +96,9 @@ int spork_trampoline(void *arg) {
     gain_lock();
 
     // receive from the mailbox
-    void *msg;
+    void *msg = NULL;
     MboxRecv(trampoline_Mbox, msg, sizeof(int (*)(void *)));
+
 
     int (*func)(void *) = (int (*)(void *)) msg;
 
@@ -107,9 +109,8 @@ int spork_trampoline(void *arg) {
     unsigned int old_psr = USLOSS_PsrGet();
     int psr_status = USLOSS_PsrSet(old_psr & 0b1110);
     
-
     // call func from user mode
-    func(arg);
+    return func(arg); // should this be return
 }
 
 void kernelWait(USLOSS_Sysargs *args) {
@@ -124,7 +125,6 @@ void kernelWait(USLOSS_Sysargs *args) {
     args->arg1 = (void *)(long) retval;
     args->arg2 = (void *)(long) status;
     if (retval == -2) args->arg4 = (void *)(long) -2;
-    else retval = 0;
 
     // release lock
     release_lock();
@@ -152,16 +152,18 @@ void kernelSemCreate(USLOSS_Sysargs *args) {
 
     int value = (int)(long) args->arg1;
     int sem_id = -1;
+
     for (int i=0; i < MAXSEMS; i++) {
-        if (!semaphores[i].is_alive) {
+        if (!all_semaphores[i].is_alive) {
             sem_id = i;
-            semaphores[sem_id].value = value;
+            all_semaphores[sem_id].is_alive = 1;
+            all_semaphores[sem_id].value = value;
+            args->arg1 = (void *)(long)sem_id;
+            break;
         }
     }
 
-    args->arg1 = (void *)(long)sem_id;
-    if (sem_id == -1) args->arg1 = (void *)(long) -1;
-    else args->arg1 = 0;
+    if (sem_id == -1) args->arg4 = (void *)(long) -1;
 
     // release lock
     release_lock();
@@ -176,11 +178,11 @@ void kernelSemP(USLOSS_Sysargs *args) {
     int sem_id = (int)(long)args->arg1;
 
     // check for invalid id
-    if (sem_id >= MAXSEMS || !semaphores[sem_id].is_alive) {
+    if (sem_id >= MAXSEMS || !all_semaphores[sem_id].is_alive) {
         args->arg4 = (void *)(long) -1;
     } else {
         // decrement the sempahore
-        semaphores[sem_id].value--;
+        all_semaphores[sem_id].value--;
     }
 
 
@@ -197,11 +199,11 @@ void kernelSemV(USLOSS_Sysargs *args) {
     int sem_id = (int)(long)args->arg1;
 
     // check for invalid id
-    if (sem_id >= MAXSEMS || !semaphores[sem_id].is_alive) {
+    if (sem_id >= MAXSEMS || !all_semaphores[sem_id].is_alive) {
         args->arg4 = (void *)(long) -1;
     } else {
         // decrement the sempahore
-        semaphores[sem_id].value++;
+        all_semaphores[sem_id].value++;
     }
 
     // release lock
