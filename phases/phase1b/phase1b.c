@@ -70,7 +70,8 @@ void         dumpProcesses        (                               );
  */
 
 pcb   proc_table[MAXPROC];          // the process table
-pcb*  cur_proc = NULL;              // a reference to the current process
+/*pcb*  cur_proc = &proc_table[0];              // a reference to the current process*/
+pcb*  cur_proc = NULL;
 char  init_stack[USLOSS_MIN_STACK]; // the stack for the init process
 int   last_pid_created;             // the pid of the last process that was created in spork
 
@@ -532,7 +533,7 @@ void dispatcher() {
     // choose which process will run next
     pcb * proc_toRun = NULL;
     for (int i = 0; i < 6; i++) {
-        if (queues[i]) {
+        if (queues[i] && !queues[i]->termination) {
             proc_toRun = queues[i];
 
             // dequeue the process
@@ -545,30 +546,32 @@ void dispatcher() {
         }
     }
 
-    enable_interrupts();
+    // get the current time
     int cur_time = currentTime();
-    disable_interrupts();
 
     if (!proc_toRun) {
         dumpQueues();
         dumpProcesses();
     }
 
-    // TODO: what to do if process is NULL?
 
     // if the process that should run is not the current process, switch to it
-    if (proc_toRun->pid != cur_proc->pid ||
+    int cur_proc_pid = cur_proc ? cur_proc->pid : -1;
+    if (proc_toRun->pid != cur_proc_pid ||
             cur_time - time_ofLastSwitch >= 80) {
         time_ofLastSwitch = cur_time;
 
-        USLOSS_Context * old = cur_proc ? &(cur_proc->context) : NULL;
+        USLOSS_Context *old = cur_proc ? &(cur_proc->context) : NULL;
+        /*USLOSS_Context *old = &(cur_proc->  context);*/
         USLOSS_Context *new = &(proc_toRun->context);
 
         // update current proces global
         cur_proc = proc_toRun;
 
+
         // perform the context switch
         USLOSS_ContextSwitch(old, new);
+
     }
 
     restore_interrupts(old_psr);
@@ -580,15 +583,19 @@ int getpid() {
 }
 
 void dumpQueues() {
+    // disable interrupts, save old interrupt state, check for kernel mode
+    unsigned int old_psr = check_and_disable(__func__);
+
     for (int i=0; i < 6; i++) {
         pcb *cur = queues[i];
-        USLOSS_Console("Queue %d: ", i+1);
+        USLOSS_Console("QUEUE %d: ", i+1);
         while (cur) {
             USLOSS_Console("%d ", cur->pid);
             cur = cur->next_run;
         }
         USLOSS_Console("\n");
     }
+    restore_interrupts(old_psr);
 }
 
 void dumpProcesses() {
@@ -610,10 +617,10 @@ void dumpProcesses() {
 
             // print process information to console
             USLOSS_Console(" %*d  %*d  %-*s  %-*d  %s\n",
-                    3, proc->pid,
-                    4, ppid,
+                    3,  proc->pid,
+                    4,  ppid,
                     16, proc->name,
-                    8, proc->priority,
+                    8,  proc->priority,
                     status_to_print);
         }
     }
