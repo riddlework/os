@@ -1,0 +1,188 @@
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+pid: 1
+Queue 1: 
+Queue 2: 
+Queue 3: 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+phase2_start_service_processes() called -- currently a NOP
+phase3_start_service_processes() called -- currently a NOP
+phase4_start_service_processes() called -- currently a NOP
+phase5_start_service_processes() called -- currently a NOP
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Running
+   2     1  testcase_main     3         Runnable
+pid: 2
+Queue 1: 
+Queue 2: 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Running
+   2     1  testcase_main     3         Runnable
+pid: 2
+Queue 1: 
+Queue 2: 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+testcase_main(): started
+EXPECTATION: XXp1 should run promptly, as it is high priority; XXp2 should run only *after* we have started the second join(), because it is low priority.
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Running
+   3     2  XXp1              2         Runnable
+pid: 3
+Queue 1: 
+Queue 2: 3 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Running
+   3     2  XXp1              2         Runnable
+pid: 3
+Queue 1: 
+Queue 2: 3 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+XXp1(): started
+XXp1(): arg = 'XXp1'
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Runnable
+   3     2  XXp1              2         Running
+pid: 3
+Queue 1: 
+Queue 2: 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Runnable
+   3     2  XXp1              2         Running
+pid: 2
+Queue 1: 
+Queue 2: 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+testcase_main(): after fork of child 3 -- you should not see this until XXp1 has completed.
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Running
+   3     2  XXp1              2         Terminated(3)
+   4     2  XXp2              5         Runnable
+pid: 4
+Queue 1: 
+Queue 2: 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 4 
+Queue 6: 1 
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Running
+   3     2  XXp1              2         Terminated(3)
+   4     2  XXp2              5         Runnable
+pid: 2
+Queue 1: 
+Queue 2: 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 4 
+Queue 6: 1 
+testcase_main(): after fork of child 4 -- you should see this before XXp2 runs.
+testcase_main(): performing first join
+testcase_main(): exit status for child 3 is 3
+testcase_main(): performing second join -- you should see this before XXp2 runs.
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Running
+   4     2  XXp2              5         Runnable
+pid: 4
+Queue 1: 
+Queue 2: 
+Queue 3: 
+Queue 4: 
+Queue 5: 4 
+Queue 6: 1 
+XXp2(): started
+XXp2(): arg = 'XXp2'
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Runnable
+   4     2  XXp2              5         Running
+pid: 2
+Queue 1: 
+Queue 2: 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 4 
+Queue 6: 1 
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Runnable
+   4     2  XXp2              5         Running
+pid: 2
+Queue 1: 
+Queue 2: 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 4 
+Queue 6: 1 
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Running
+   4     2  XXp2              5         Terminated(5)
+pid: 4
+Queue 1: 
+Queue 2: 
+Queue 3: 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Runnable
+   4     2  XXp2              5         Running
+pid: 1
+Queue 1: 
+Queue 2: 
+Queue 3: 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Running
+   2     1  testcase_main     3         Runnable
+   4     2  XXp2              5         Terminated(5)
+pid: 1
+Queue 1: 
+Queue 2: 
+Queue 3: 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+Queue 1: 
+Queue 2: 
+Queue 3: 
+Queue 4: 
+Queue 5: 
+Queue 6: 
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Running
+   2     1  testcase_main     3         Runnable
+   4     2  XXp2              5         Terminated(5)

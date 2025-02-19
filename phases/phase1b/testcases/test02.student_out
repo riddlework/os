@@ -1,0 +1,197 @@
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+pid: 1
+Queue 1: 
+Queue 2: 
+Queue 3: 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+phase2_start_service_processes() called -- currently a NOP
+phase3_start_service_processes() called -- currently a NOP
+phase4_start_service_processes() called -- currently a NOP
+phase5_start_service_processes() called -- currently a NOP
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Running
+   2     1  testcase_main     3         Runnable
+pid: 2
+Queue 1: 
+Queue 2: 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Running
+   2     1  testcase_main     3         Runnable
+pid: 2
+Queue 1: 
+Queue 2: 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+testcase_main(): started
+EXPECTATION: main creates XXp1; XXp1 creates a pair of XXp2 procs; join() each parent with all its children.  (children are always higher priority than parents, in this testcase)
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Running
+   3     2  XXp1              2         Runnable
+pid: 3
+Queue 1: 
+Queue 2: 3 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Running
+   3     2  XXp1              2         Runnable
+pid: 3
+Queue 1: 
+Queue 2: 3 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+XXp1(): started
+XXp1(): arg = 'XXp1'
+XXp1(): executing fork of first child
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Runnable
+   3     2  XXp1              2         Running
+   4     3  XXp2              1         Runnable
+pid: 4
+Queue 1: 4 
+Queue 2: 3 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Runnable
+   3     2  XXp1              2         Running
+   4     3  XXp2              1         Runnable
+pid: 4
+Queue 1: 4 
+Queue 2: 3 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+XXp2(): started
+XXp2(): arg = 'XXp2'
+XXp2(): This XXp2() process will now quit().
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Runnable
+   3     2  XXp1              2         Runnable
+   4     3  XXp2              1         Running
+pid: 4
+Queue 1: 
+Queue 2: 3 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Runnable
+   3     2  XXp1              2         Runnable
+   4     3  XXp2              1         Running
+pid: 3
+Queue 1: 
+Queue 2: 3 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+XXp1(): spork of first child returned pid = 4 -- you should not see this until the first XXp2 process has completed.
+XXp1(): executing fork of second child -- this happens after the first XXp2 process has completed, but before we've done a join() on it.
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Runnable
+   3     2  XXp1              2         Running
+   4     3  XXp2              1         Terminated(5)
+   5     3  XXp2              1         Runnable
+pid: 5
+Queue 1: 5 
+Queue 2: 3 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Runnable
+   3     2  XXp1              2         Running
+   4     3  XXp2              1         Terminated(5)
+   5     3  XXp2              1         Runnable
+pid: 5
+Queue 1: 5 
+Queue 2: 3 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+XXp2(): started
+XXp2(): arg = 'XXp2'
+XXp2(): This XXp2() process will now quit().
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Runnable
+   3     2  XXp1              2         Runnable
+   4     3  XXp2              1         Terminated(5)
+   5     3  XXp2              1         Running
+pid: 5
+Queue 1: 
+Queue 2: 3 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Runnable
+   3     2  XXp1              2         Runnable
+   4     3  XXp2              1         Terminated(5)
+   5     3  XXp2              1         Running
+pid: 3
+Queue 1: 
+Queue 2: 3 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+XXp1(): spork of second child returned pid = 5 -- you should not see this until the second XXp2 process has completed.
+XXp1(): first join returned kidpid = 5, status = 5
+XXp1(): second join returned kidpid = 4, status = 5
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Runnable
+   3     2  XXp1              2         Running
+pid: 3
+Queue 1: 
+Queue 2: 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Runnable
+   3     2  XXp1              2         Running
+pid: 2
+Queue 1: 
+Queue 2: 
+Queue 3: 2 
+Queue 4: 
+Queue 5: 
+Queue 6: 1 
+testcase_main(): after fork of child 3 -- you should not see this until XXp1, and both of the XXp2 processes, have completed.
+testcase_main(): performing join
+testcase_main(): exit status for child 3 is 3
+finish(): The simulation is now terminating.
