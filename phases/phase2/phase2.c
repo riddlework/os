@@ -14,6 +14,7 @@
 typedef struct pcb {
     // TODO: could make one general next ptr
            char *msg_ptr; // filled by producer, read by consumer
+           int msg_size;
     struct pcb *next_producer;
     struct pcb *next_consumer;
            int            pid;
@@ -22,6 +23,7 @@ typedef struct pcb {
 
 typedef struct mslot {
     char msg[MAX_MESSAGE];
+    int msg_size;
     struct mslot *next_slot;
     int is_alive;
 } Mslot;
@@ -58,9 +60,9 @@ static void disk_handler(int dev, void *arg);
 static void nullsys();
 
 /*************** GLOBAL VARIABLES ***************/
-Mbox mboxes[MAXMBOX];
-Mslot mslots[MAXSLOTS];
-pcb shadow_proc_table[MAXPROC];
+static Mbox mboxes[MAXMBOX];
+static Mslot mslots[MAXSLOTS];
+static pcb shadow_proc_table[MAXPROC];
 void (*systemCallVec[MAXSYSCALLS])(USLOSS_Sysargs *args);
 
 // mbox ids for devices
@@ -156,6 +158,9 @@ void phase2_init() {
     USLOSS_IntVec[USLOSS_CLOCK_INT] = clock_handler;
     USLOSS_IntVec[USLOSS_TERM_INT] = term_handler;
     USLOSS_IntVec[USLOSS_DISK_INT] = disk_handler;
+    USLOSS_IntVec[USLOSS_CLOCK_DEV] = clock_handler;
+    USLOSS_IntVec[USLOSS_TERM_DEV] = term_handler;
+    USLOSS_IntVec[USLOSS_DISK_DEV] = disk_handler;
 
     // fill the system call vector
     for (int i = 0; i < MAXSYSCALLS; i++) systemCallVec[i] = nullsys;
@@ -177,7 +182,7 @@ int MboxCreate(int slots, int slot_size) {
     unsigned int old_psr = check_and_disable(__func__);
 
     // error checking
-    if (slot_size < 0 || slot_size > MAXSLOTS || slot_size < 0 || slot_size > MAX_MESSAGE) {
+    if (slots < 0 || slots > MAXSLOTS || slot_size < 0 || slot_size > MAX_MESSAGE) {
         return -1;
     }
 
@@ -277,11 +282,11 @@ pcb *get_cur_proc() {
     return &shadow_proc_table[pid % MAXPROC];
 }
 
-// YOU ARE A PRODUCER PROCESS
 int sendHelp(int mbox_id, void *msg_ptr, int msg_size, int block) {
     // disable interrupts, save old interrupt state, check for kernel mode
     unsigned int old_psr = check_and_disable(__func__);
 
+    // YOU ARE A PRODUCER PROCESS
 
     // check that the mbox_id is valid (bounded)
     if (mbox_id < 0 || mbox_id >= MAXMBOX) return -1;
@@ -292,24 +297,24 @@ int sendHelp(int mbox_id, void *msg_ptr, int msg_size, int block) {
     // check that the desired mbox is alive
     if (!mbox->is_alive) return -1;
 
-    // check that the message matches its metadata
-    char *msg = (char *) msg_ptr;
-    // TODO: might cause an error when msg_ptr is NULL and msg_size is 0
-    if ((!msg && msg_size) || msg_size > mbox->maxMsgSize || (msg && strlen(msg)+1 != msg_size)) {
-        // check that msg exists before trying to use strlen on it
-        // +1 to accomodate for null terminator
+    // check that the message is of valid size
+    if ((!msg_ptr && msg_size) || msg_size > mbox->maxMsgSize) {
         return -1;
     }
 
     if (mbox->consumers) {
         // IF CONSUMER WAITING, DELIVER MSG DIRECTLY
+        pcb *consumer_proc = mbox->consumers;
 
         // write the message to the consumer -- if the ptr is not NULL
-        if (msg) strcpy(mbox->consumers->msg_ptr, msg);
+        if (msg_ptr) {
+            memcpy(consumer_proc->msg_ptr, msg_ptr, msg_size);
+            consumer_proc->msg_size = msg_size;
+        }
 
         // dequeue and unblock the consumer
-        int pid_toUnblock = mbox->consumers->pid;
-        mbox->consumers = mbox->consumers->next_consumer;
+        int pid_toUnblock = consumer_proc->pid;
+        mbox->consumers = consumer_proc->next_consumer;
         unblockProc(pid_toUnblock);
 
     } else if (mbox->numSlots) {
@@ -331,7 +336,8 @@ int sendHelp(int mbox_id, void *msg_ptr, int msg_size, int block) {
         // fill newly allocated mslot
         Mslot *mslot = &mslots[mslot_id];
         mslot->is_alive = 1;
-        strcpy(mslot->msg, msg);
+        memcpy(mslot->msg, msg_ptr, msg_size);
+        mslot->msg_size = msg_size;
 
         // add mslot to mbox mslot queue
         Mslot *cur = mbox->first_mslot;
@@ -384,7 +390,8 @@ int sendHelp(int mbox_id, void *msg_ptr, int msg_size, int block) {
         // fill newly allocated mslot
         Mslot *mslot = &mslots[mslot_id];
         mslot->is_alive = 1;
-        strcpy(mslot->msg, msg);
+        memcpy(mslot->msg, msg_ptr, msg_size);
+        mslot->msg_size = msg_size;
 
 
         // queue the mslot
@@ -424,21 +431,22 @@ int recvHelp(int mbox_id, void *msg_ptr, int max_msg_size, int block) {
     // declare return value
     int msg_size;
     if (mbox->first_mslot) {
+        // retrieve a reference to the mslot
+        Mslot *mslot = mbox->first_mslot;
+
         // if there is a message queued, consume it
-        char *msg = strdup(mbox->first_mslot->msg);
-        msg_size = strlen(msg) + 1; // account for null terminator
+        msg_size = mslot->msg_size;
 
         // check if the message is too large for the buffer
         // or the buffer is null and the msg is not null
         if (msg_size > max_msg_size || (!msg_ptr && msg_size)) return -1;
 
         // copy the message into the buffer -- if not null
-        if (msg_ptr) strcpy(msg_ptr, msg);
+        if (msg_ptr) memcpy(msg_ptr, mslot->msg, msg_size);
 
         // free the mslot
-        Mslot *mslot_toFree = mbox->first_mslot;
-        mbox->first_mslot = mbox->first_mslot->next_slot;
-        memset(mslot_toFree, 0, sizeof(Mslot));
+        mbox->first_mslot = mslot->next_slot;
+        memset(mslot, 0, sizeof(Mslot));
 
         // increment the mbox's number of available mslots
         mbox->numSlots++;
@@ -476,15 +484,14 @@ int recvHelp(int mbox_id, void *msg_ptr, int max_msg_size, int block) {
 
         // consume msg
         pcb *consumer_proc = &shadow_proc_table[getpid() % MAXPROC];
-        char *msg = strdup(consumer_proc->msg_ptr);
-        msg_size = strlen(msg) + 1; // account for null terminator
+        msg_size = consumer_proc->msg_size;
 
         // check if the message is too large for the buffer
         // or the buffer is null and the msg is not null
         if (msg_size > max_msg_size || (!msg_ptr && msg_size)) return -1;
 
         // copy the message into the buffer -- if not null
-        if (msg_ptr) strcpy(msg_ptr, msg);
+        if (msg_ptr) memcpy(msg_ptr, consumer_proc->msg_ptr, msg_size);
 
     } else {
         return -2;
@@ -513,7 +520,7 @@ void waitDevice(int type, int unit, int *status) {
     }
 
     // recv from mailbox, store msg in status pointer
-    MboxCondRecv(mbox_id, status, sizeof(int));
+    MboxRecv(mbox_id, (void *) status, sizeof(int));
 
     restore_interrupts(old_psr);
 }
@@ -522,20 +529,24 @@ static void clock_handler(int dev, void *arg) {
     // disable interrupts, save old interrupt state, check for kernel mode
     unsigned int old_psr = check_and_disable(__func__);
     
-    // TODO: call dispatcher somewhere else?
-    dispatcher();
-
     // get the time since last msg send in ms.
     int new_clock_time = currentTime();
     int time_elapsed = (new_clock_time - time_ofLastSend)/1000;
+
     
     if (time_elapsed >= 100) {
+        // reset wall clock time
+        time_ofLastSend = new_clock_time;
+
         // retrieve input status
-        int *status;
-        int input_status = USLOSS_DeviceInput(dev, 0, status);
+        int status;
+        int input_status = USLOSS_DeviceInput(dev, 0, &status);
 
         // send status as payload for msg
-        MboxCondSend(clock_mbox_id, (void *) status, sizeof(int));
+        MboxCondSend(clock_mbox_id, (void *) &status, sizeof(int));
+
+        // call the dispatcher
+        dispatcher();
     }
 
     restore_interrupts(old_psr);
@@ -550,12 +561,12 @@ static void term_handler(int dev, void *arg) {
     int term_no = (int)(long) arg;
 
     // retrieve input status
-    int *status;
-    int input_status = USLOSS_DeviceInput(dev, term_no, status);
+    int status;
+    int input_status = USLOSS_DeviceInput(dev, term_no, &status);
 
     // send status as payload for msg
     int mbox_id = term_mbox_ids[term_no];
-    MboxCondSend(mbox_id, (void *) status, sizeof(int));
+    MboxCondSend(mbox_id, (void *) &status, sizeof(int));
 
     restore_interrupts(old_psr);
 }
@@ -568,12 +579,12 @@ static void disk_handler(int dev, void *arg) {
     int disk_no = (int)(long) arg;
 
     // retrieve input status
-    int *status;
-    int input_status = USLOSS_DeviceInput(dev, disk_no, status);
+    int status;
+    int input_status = USLOSS_DeviceInput(dev, disk_no, &status);
 
     // send status as payload for msg
     int mbox_id = disk_mbox_ids[disk_no];
-    MboxCondSend(mbox_id, (void *) status, sizeof(int));
+    MboxCondSend(mbox_id, (void *) &status, sizeof(int));
 
     restore_interrupts(old_psr);
 }
