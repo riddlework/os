@@ -1,0 +1,35 @@
+producers block when they attempt to send a message but the mailbox has
+already consumed its maximum number of allowable mailslots.
+    -- blocks until one or more of the messages are consumed
+        --> does this mean the consumer process should unblock a producer when
+            consuming a message?
+    -- at this point the producer is allowed to allocate a slot and write its message
+
+consumers block when there are no queued messages. when a producer writes a message
+to a slot, a consumer process will
+    -- read the message
+    -- free the slot
+    -- return
+
+producers must deliver messages in the order in which they arrived
+consumers must consume messages in the order in which they arrived
+
+strategy for waking up consumers one at a time (for recv)
+    -- say you have a number of messages queued up in the mailslots of an mbox.
+    -- the producer process (the one in send) sees that the consumer queue
+       (processes in recv) is not empty. it delivers its message to the first consumer.
+    -- the consumer process wakes up in recv. before leaving, it checks to see
+       if there are any more consumer processes queued up in the mbox it was recv'ing
+       from.
+    -- if the consumer process sees that there are (a) more consumer processes and
+       (b) more messages queued in mslots, it wakes the next consumer process.
+    -- this strategy may incur race conditions, and necessitates setting a flag in
+       the mslot to indicate that it belongs to a process already
+
+direct delivery is easier
+
+all messages sent to zero-slot mailboxes will be zero length
+
+if a process is blocked on sending/recving and the mailbox is released, the
+send/recv function should return -1. basically, when falling out of the block,
+the process should check if the mailbox is still alive before producing/consuming msg.
