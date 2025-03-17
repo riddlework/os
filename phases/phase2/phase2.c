@@ -59,7 +59,7 @@ static void clock_handler(int dev, void *arg);
 static void term_handler(int dev, void *arg);
 static void disk_handler(int dev, void *arg);
 static void syscallHandler(int dev, void *arg);
-static void nullsys();
+static void nullsys(USLOSS_Sysargs *arg);
 
 /*************** GLOBAL VARIABLES ***************/
 static Mbox mboxes[MAXMBOX];
@@ -597,7 +597,7 @@ static void syscallHandler(int dev, void *arg) {
     USLOSS_Sysargs *arg_struct = (USLOSS_Sysargs *) arg;
     int syscall_num = arg_struct->number;
 
-    if (syscall_num > 0 && syscall_num < MAXSYSCALLS) {
+    if (syscall_num >= 0 && syscall_num < MAXSYSCALLS) {
         // if the syscall num is valid, call the function in the vector
         systemCallVec[syscall_num](arg_struct);
     } else {
@@ -610,12 +610,13 @@ static void syscallHandler(int dev, void *arg) {
     restore_interrupts(old_psr);
 }
 
-static void nullsys() {
+static void nullsys(USLOSS_Sysargs *arg) {
     // disable interrupts, save old interrupt state, check for kernel mode
     unsigned int old_psr = check_and_disable(__func__);
 
-    USLOSS_Console("ERROR: System call vector empty! Halting simulation.\n");
-    USLOSS_Halt(1);
+    int syscall_num = arg->number;
 
+    USLOSS_Console("nullsys(): Program called an unimplemented syscall.  syscall no: %d   PSR: %#04x\n", syscall_num, old_psr);
+    USLOSS_Halt(1);
     restore_interrupts(old_psr);
 }
