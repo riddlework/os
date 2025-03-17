@@ -33,3 +33,7 @@ all messages sent to zero-slot mailboxes will be zero length
 if a process is blocked on sending/recving and the mailbox is released, the
 send/recv function should return -1. basically, when falling out of the block,
 the process should check if the mailbox is still alive before producing/consuming msg.
+
+when will a consumer process be unblocked?
+    -- when the mailbox is released
+    -- 

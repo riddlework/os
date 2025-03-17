@@ -12,13 +12,8 @@
 
 // struct definitions
 typedef struct pcb {
-    // TODO: what do we need here?
-    // must keep what's necessary for queueing blocked processes
-    // remove everything else
-
-    // both not strictly necessary but good for visualization
-    // msg_ptr could be in or out, depending on if process is consumer or producer
-           char *msg_ptr;
+    // TODO: could make one general next ptr
+           char *msg_ptr; // filled by producer, read by consumer
     struct pcb *next_producer;
     struct pcb *next_consumer;
            int            pid;
@@ -48,7 +43,6 @@ typedef struct mbox {
 
 // function stubs
 
-void dumpMbox(int mbox_id);
 void         check_kernel_mode             (const char        *func        );
 void         enable_interrupts             (                               );
 unsigned int disable_interrupts            (                               );
@@ -58,11 +52,25 @@ void         phase2_start_service_processes();
 int          sendHelp(int mbox_id, void *msg_ptr, int msg_size, int block);
 int          recvHelp(int mbox_id, void *msg_ptr, int msg_max_size, int block);
 
-// global variables
+static void clock_handler(int dev, void *arg);
+static void term_handler(int dev, void *arg);
+static void disk_handler(int dev, void *arg);
+static void nullsys();
+
+/*************** GLOBAL VARIABLES ***************/
 Mbox mboxes[MAXMBOX];
 Mslot mslots[MAXSLOTS];
 pcb shadow_proc_table[MAXPROC];
+void (*systemCallVec[MAXSYSCALLS])(USLOSS_Sysargs *args);
 
+// mbox ids for devices
+int clock_mbox_id;
+int disk_mbox_ids[2];
+int term_mbox_ids[3];
+
+int time_ofLastSend;
+
+/*************** SERVICE FUNCTIONS ***************/
 
 // verifies that the program is currently running in kernel mode and halts if not 
 void check_kernel_mode(const char *func) {
@@ -122,19 +130,6 @@ unsigned int check_and_disable(const char *func) {
     return disable_interrupts();
 }
 
-static void trivial_clock_handler(int dev, void *arg) {
-    dispatcher();
-}
-
-static void term_handler(int dev, void *arg) {
-    // retreieve terminal number from arg
-    int term_no = (int)(long) arg;
-}
-
-static void disk_handler(int dev, void *arg) {
-    // retrieve disk number from arg
-    int disk_no = (int)(long) arg;
-}
 
 void phase2_init() {
     // disable interrupts, save old interrupt state, check for kernel mode
@@ -150,11 +145,20 @@ void phase2_init() {
     for (int i = 0; i < MAXPROC; i++) memset(&shadow_proc_table[i], 0, sizeof(pcb));
 
     // allocate mailboxes for interrupt handlers
-    for (int i = 0; i < 7; i++) MboxCreate(1, sizeof(int));
+    clock_mbox_id = MboxCreate(1, sizeof(int));
+    for (int i = 0; i < 2; i++) disk_mbox_ids[i] = MboxCreate(1, sizeof(int));
+    for (int i = 0; i < 4; i++) term_mbox_ids[i] = MboxCreate(1, sizeof(int));
 
-    // send messages to wake up the device driver and when an interrupt occurs
+    // initialize clock time
+    time_ofLastSend = 0;
 
-    USLOSS_IntVec[USLOSS_CLOCK_INT] = trivial_clock_handler;
+    // fill the interrupt vector with the appropriate functions
+    USLOSS_IntVec[USLOSS_CLOCK_INT] = clock_handler;
+    USLOSS_IntVec[USLOSS_TERM_INT] = term_handler;
+    USLOSS_IntVec[USLOSS_DISK_INT] = disk_handler;
+
+    // fill the system call vector
+    for (int i = 0; i < MAXSYSCALLS; i++) systemCallVec[i] = nullsys;
 
     restore_interrupts(old_psr);
 }
@@ -164,6 +168,8 @@ void phase2_init() {
 void phase2_start_service_processes() {
 }
 
+
+/*************** MBOX FUNCTIONS ***************/
 
 // returns id of mailbox, or -1 if no more mailboxes, or -1 if invalid args
 int MboxCreate(int slots, int slot_size) {
@@ -271,25 +277,11 @@ pcb *get_cur_proc() {
     return &shadow_proc_table[pid % MAXPROC];
 }
 
+// YOU ARE A PRODUCER PROCESS
 int sendHelp(int mbox_id, void *msg_ptr, int msg_size, int block) {
     // disable interrupts, save old interrupt state, check for kernel mode
     unsigned int old_psr = check_and_disable(__func__);
 
-    // YOU ARE A PRODUCER PROCESS
-
-    // you have
-    // mbox_id -- the id of the mailbox to send the message to
-        // if the mbox_id is invalid, i.e., out of bounds, throw error
-        // if the mbox_id is valid but the mbox has been terminated, throw error
-    // msg_ptr -- a pointer to the message you are sending
-        // a void *, cast to char *
-    // msg_size -- the size of the message you are sending
-       // if msg_ptr is NULL and msg_size != 0, throw error
-       // each mbox has a max size that its messages can be, should use this
-       // TODO: should we only copy over msg_size bytes?
-       // or should we just throw an error if strlen(msg_ptr) != msg_size?
-
-    // you are a producer process
 
     // check that the mbox_id is valid (bounded)
     if (mbox_id < 0 || mbox_id >= MAXMBOX) return -1;
@@ -304,15 +296,13 @@ int sendHelp(int mbox_id, void *msg_ptr, int msg_size, int block) {
     char *msg = (char *) msg_ptr;
     // TODO: might cause an error when msg_ptr is NULL and msg_size is 0
     if ((!msg && msg_size) || msg_size > mbox->maxMsgSize || (msg && strlen(msg)+1 != msg_size)) {
-        // +1 to accomodate for null terminator
         // check that msg exists before trying to use strlen on it
+        // +1 to accomodate for null terminator
         return -1;
     }
 
-
-
     if (mbox->consumers) {
-        // IF CONSUMER, DELIVER MSG DIRECTLY
+        // IF CONSUMER WAITING, DELIVER MSG DIRECTLY
 
         // write the message to the consumer -- if the ptr is not NULL
         if (msg) strcpy(mbox->consumers->msg_ptr, msg);
@@ -371,7 +361,7 @@ int sendHelp(int mbox_id, void *msg_ptr, int msg_size, int block) {
         }
         blockMe();
 
-        // AFTER BLOCK: (a) AVAILABLE MSLOT OR (b) MBOX RELEASED
+        // AFTER BLOCK: (a) MBOX RELEASED OR (b) MSLOT AVAILABLE
 
         // check if the mailbox has been released
         if (!mbox->is_alive) return -1;
@@ -414,21 +404,13 @@ int sendHelp(int mbox_id, void *msg_ptr, int msg_size, int block) {
 
     restore_interrupts(old_psr);
     return 0;
-
-
 }
 
+// YOU ARE A CONSUMER PROCESS
 int recvHelp(int mbox_id, void *msg_ptr, int max_msg_size, int block) {
     // disable interrupts, save old interrupt state, check for kernel mode
     unsigned int old_psr = check_and_disable(__func__);
 
-    // YOU ARE A CONSUMER PROCESS
-
-    // you have
-    // mbox_id -- the id of the mbox you are receiving a message from
-    // msg_ptr -- the pointer to fill with recv'ed message
-    // max_msg_size -- the size of the buffer
-       // you can recieve up to this size, but might receive less
 
     // check that the mbox_id is valid (bounded)
     if (mbox_id < 0 || mbox_id >= MAXMBOX) return -1;
@@ -512,33 +494,96 @@ int recvHelp(int mbox_id, void *msg_ptr, int max_msg_size, int block) {
     return msg_size;
 }
 
+/*************** INTERRUPT HANDLERS ***************/
+void waitDevice(int type, int unit, int *status) {
+    // disable interrupts, save old interrupt state, check for kernel mode
+    unsigned int old_psr = check_and_disable(__func__);
 
-void dumpMbox(int mbox_id) {
-    printf("MBOX %d\n", mbox_id);
-    Mbox * mbox = &mboxes[mbox_id];
-
-    printf("MSLOTS\n");
-
-    Mslot *mslot = mbox->first_mslot;
-    int i = 0;
-    while (mslot) {
-        printf("mslot_id = %d; msg = %s\n", i, mslot->msg);
-        i++;
-        mslot = mslot->next_slot;
+    int mbox_id;
+    if (type == USLOSS_CLOCK_INT && unit == 0) {
+        mbox_id = clock_mbox_id;
+    } else if (type == USLOSS_DISK_INT && (unit == 0 || unit == 1)) {
+        mbox_id = disk_mbox_ids[unit];
+    } else if (type == USLOSS_TERM_INT && (unit == 0 || unit == 1 || unit == 2 || unit == 3)) {
+        mbox_id = term_mbox_ids[unit];
+    } else {
+        // invalid type/unit
+        USLOSS_Console("ERROR: Not a valid device type/unit! Halting simulation.\n");
+        USLOSS_Halt(1);
     }
 
-    printf("PRODUCERS\n");
-    pcb *producer = mbox->producers;
-    while (producer) {
-        printf("pid = %d; msg = %s\n", producer->pid, producer->msg_ptr ? producer->msg_ptr : "NULL");
-        producer = producer->next_producer;
-    }
+    // recv from mailbox, store msg in status pointer
+    MboxCondRecv(mbox_id, status, sizeof(int));
 
-    printf("CONSUMERS\n");
-    pcb *consumer = mbox->consumers;
-    while (consumer) {
-        printf("pid = %d; msg = %s\n", consumer->pid, consumer->msg_ptr ? consumer->msg_ptr : "NULL");
-        consumer = consumer->next_consumer;
-    }
+    restore_interrupts(old_psr);
+}
+
+static void clock_handler(int dev, void *arg) {
+    // disable interrupts, save old interrupt state, check for kernel mode
+    unsigned int old_psr = check_and_disable(__func__);
     
+    // TODO: call dispatcher somewhere else?
+    dispatcher();
+
+    // get the time since last msg send in ms.
+    int new_clock_time = currentTime();
+    int time_elapsed = (new_clock_time - time_ofLastSend)/1000;
+    
+    if (time_elapsed >= 100) {
+        // retrieve input status
+        int *status;
+        int input_status = USLOSS_DeviceInput(dev, 0, status);
+
+        // send status as payload for msg
+        MboxCondSend(clock_mbox_id, (void *) status, sizeof(int));
+    }
+
+    restore_interrupts(old_psr);
+    
+}
+
+static void term_handler(int dev, void *arg) {
+    // disable interrupts, save old interrupt state, check for kernel mode
+    unsigned int old_psr = check_and_disable(__func__);
+
+    // retreieve terminal number from arg
+    int term_no = (int)(long) arg;
+
+    // retrieve input status
+    int *status;
+    int input_status = USLOSS_DeviceInput(dev, term_no, status);
+
+    // send status as payload for msg
+    int mbox_id = term_mbox_ids[term_no];
+    MboxCondSend(mbox_id, (void *) status, sizeof(int));
+
+    restore_interrupts(old_psr);
+}
+
+static void disk_handler(int dev, void *arg) {
+    // disable interrupts, save old interrupt state, check for kernel mode
+    unsigned int old_psr = check_and_disable(__func__);
+
+    // retrieve disk number from arg
+    int disk_no = (int)(long) arg;
+
+    // retrieve input status
+    int *status;
+    int input_status = USLOSS_DeviceInput(dev, disk_no, status);
+
+    // send status as payload for msg
+    int mbox_id = disk_mbox_ids[disk_no];
+    MboxCondSend(mbox_id, (void *) status, sizeof(int));
+
+    restore_interrupts(old_psr);
+}
+
+static void nullsys() {
+    // disable interrupts, save old interrupt state, check for kernel mode
+    unsigned int old_psr = check_and_disable(__func__);
+
+    USLOSS_Console("ERROR: System call vector empty! Halting simulation.\n");
+    USLOSS_Halt(1);
+
+    restore_interrupts(old_psr);
 }
