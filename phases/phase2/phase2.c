@@ -8,6 +8,7 @@
 #include "phase1.h"
 #include "phase2.h"
 #include <usloss.h>
+#include "usyscall.h"
 
 
 // struct definitions
@@ -57,6 +58,7 @@ int          recvHelp(int mbox_id, void *msg_ptr, int msg_max_size, int block);
 static void clock_handler(int dev, void *arg);
 static void term_handler(int dev, void *arg);
 static void disk_handler(int dev, void *arg);
+static void syscallHandler(int dev, void *arg);
 static void nullsys();
 
 /*************** GLOBAL VARIABLES ***************/
@@ -158,9 +160,7 @@ void phase2_init() {
     USLOSS_IntVec[USLOSS_CLOCK_INT] = clock_handler;
     USLOSS_IntVec[USLOSS_TERM_INT] = term_handler;
     USLOSS_IntVec[USLOSS_DISK_INT] = disk_handler;
-    USLOSS_IntVec[USLOSS_CLOCK_DEV] = clock_handler;
-    USLOSS_IntVec[USLOSS_TERM_DEV] = term_handler;
-    USLOSS_IntVec[USLOSS_DISK_DEV] = disk_handler;
+    USLOSS_IntVec[USLOSS_SYSCALL_INT] = syscallHandler;
 
     // fill the system call vector
     for (int i = 0; i < MAXSYSCALLS; i++) systemCallVec[i] = nullsys;
@@ -549,6 +549,7 @@ static void clock_handler(int dev, void *arg) {
         dispatcher();
     }
 
+
     restore_interrupts(old_psr);
     
 }
@@ -585,6 +586,26 @@ static void disk_handler(int dev, void *arg) {
     // send status as payload for msg
     int mbox_id = disk_mbox_ids[disk_no];
     MboxCondSend(mbox_id, (void *) &status, sizeof(int));
+
+    restore_interrupts(old_psr);
+}
+
+static void syscallHandler(int dev, void *arg) {
+    // disable interrupts, save old interrupt state, check for kernel mode
+    unsigned int old_psr = check_and_disable(__func__);
+
+    USLOSS_Sysargs *arg_struct = (USLOSS_Sysargs *) arg;
+    int syscall_num = arg_struct->number;
+
+    if (syscall_num > 0 && syscall_num < MAXSYSCALLS) {
+        // if the syscall num is valid, call the function in the vector
+        systemCallVec[syscall_num](arg_struct);
+    } else {
+        // otherwise, print error and halt simulation
+        USLOSS_Console("syscallHandler(): Invalid syscall number %d\n", syscall_num);
+        USLOSS_Halt(1);
+    }
+
 
     restore_interrupts(old_psr);
 }
