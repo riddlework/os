@@ -3,6 +3,7 @@
 // what fields from the pcb struct do we actually need?
 
 #include <string.h>
+#include <stdio.h>
 
 #include "phase1.h"
 #include "phase2.h"
@@ -47,12 +48,12 @@ typedef struct mbox {
 
 // function stubs
 
+void dumpMbox(int mbox_id);
 void         check_kernel_mode             (const char        *func        );
 void         enable_interrupts             (                               );
 unsigned int disable_interrupts            (                               );
 void         restore_interrupts            (      unsigned int old_psr     );
 unsigned int check_and_disable             (const char        *func        );
-void         phase2_init                   ();
 void         phase2_start_service_processes();
 int          sendHelp(int mbox_id, void *msg_ptr, int msg_size, int block);
 int          recvHelp(int mbox_id, void *msg_ptr, int msg_max_size, int block);
@@ -115,6 +116,25 @@ void restore_interrupts(unsigned int old_psr) {
     }
 }
 
+// check for kernel mode -- save and disable interrupts
+unsigned int check_and_disable(const char *func) {
+    check_kernel_mode(func);
+    return disable_interrupts();
+}
+
+static void trivial_clock_handler(int dev, void *arg) {
+    dispatcher();
+}
+
+static void term_handler(int dev, void *arg) {
+    // retreieve terminal number from arg
+    int term_no = (int)(long) arg;
+}
+
+static void disk_handler(int dev, void *arg) {
+    // retrieve disk number from arg
+    int disk_no = (int)(long) arg;
+}
 
 void phase2_init() {
     // disable interrupts, save old interrupt state, check for kernel mode
@@ -129,9 +149,20 @@ void phase2_init() {
     // initialize shadow_proc_table to 0s
     for (int i = 0; i < MAXPROC; i++) memset(&shadow_proc_table[i], 0, sizeof(pcb));
 
+    // allocate mailboxes for interrupt handlers
+    for (int i = 0; i < 7; i++) MboxCreate(1, sizeof(int));
+
+    // send messages to wake up the device driver and when an interrupt occurs
+
+    USLOSS_IntVec[USLOSS_CLOCK_INT] = trivial_clock_handler;
+
     restore_interrupts(old_psr);
 }
 
+
+
+void phase2_start_service_processes() {
+}
 
 
 // returns id of mailbox, or -1 if no more mailboxes, or -1 if invalid args
@@ -146,8 +177,12 @@ int MboxCreate(int slots, int slot_size) {
 
     // find the next available mailbox
     int mbox_id = -1;
-    for (int i = 0; i < MAXMBOX; i++)
-        if (!mboxes[i].is_alive) mbox_id = i;
+    for (int i = 0; i < MAXMBOX; i++) {
+        if (!mboxes[i].is_alive) { 
+            mbox_id = i;
+            break;
+        }
+    }
 
     // check if there are no mailboxes available
     if (mbox_id == -1) return -1;
@@ -188,11 +223,17 @@ int MboxRelease(int mbox_id) {
 
     // unblock producers
     pcb *producer = mbox->producers;
-    while ((producer = producer->next_producer)) unblockProc(producer->pid);
+    while (producer) {
+        unblockProc(producer->pid);
+        producer = producer->next_producer;
+    }
 
     // unblock consumers
     pcb *consumer = mbox->consumers;
-    while ((consumer = consumer->next_consumer)) unblockProc(consumer->pid);
+    while (consumer) {
+        unblockProc(consumer->pid);
+        consumer = consumer->next_consumer;
+    }
 
     // set to zeros
     memset(mbox, 0, sizeof(Mbox));
@@ -230,7 +271,7 @@ pcb *get_cur_proc() {
     return &shadow_proc_table[pid % MAXPROC];
 }
 
-int MboxSendHelp(int mbox_id, void *msg_ptr, int msg_size, int block) {
+int sendHelp(int mbox_id, void *msg_ptr, int msg_size, int block) {
     // disable interrupts, save old interrupt state, check for kernel mode
     unsigned int old_psr = check_and_disable(__func__);
 
@@ -262,9 +303,12 @@ int MboxSendHelp(int mbox_id, void *msg_ptr, int msg_size, int block) {
     // check that the message matches its metadata
     char *msg = (char *) msg_ptr;
     // TODO: might cause an error when msg_ptr is NULL and msg_size is 0
-    if ((!msg_ptr && msg_size) || msg_size > mbox->maxMsgSize || strlen(msg) != msg_size ) {
+    if ((!msg && msg_size) || msg_size > mbox->maxMsgSize || (msg && strlen(msg)+1 != msg_size)) {
+        // +1 to accomodate for null terminator
+        // check that msg exists before trying to use strlen on it
         return -1;
     }
+
 
 
     if (mbox->consumers) {
@@ -283,8 +327,12 @@ int MboxSendHelp(int mbox_id, void *msg_ptr, int msg_size, int block) {
 
         // find the next empty mslot
         int mslot_id = -2;
-        for (int i = 0; i < MAXSLOTS; i++)
-            if (!mslots[i].is_alive) mslot_id = i;
+        for (int i = 0; i < MAXSLOTS; i++) {
+            if (!mslots[i].is_alive) {
+                mslot_id = i;
+                break;
+            }
+        }
 
         // check if the system has run out of global mslots
         // if so, msg could not be queued, throw error
@@ -297,8 +345,12 @@ int MboxSendHelp(int mbox_id, void *msg_ptr, int msg_size, int block) {
 
         // add mslot to mbox mslot queue
         Mslot *cur = mbox->first_mslot;
-        while (cur->next_slot) cur = cur->next_slot;
-        cur->next_slot = mslot;
+        if (!cur) {
+            mbox->first_mslot = mslot;
+        } else {
+            while (cur->next_slot) cur = cur->next_slot;
+            cur->next_slot = mslot;
+        }
 
         // decrement the number of available mslots for the mbox
         mbox->numSlots--;
@@ -307,9 +359,16 @@ int MboxSendHelp(int mbox_id, void *msg_ptr, int msg_size, int block) {
         // BLOCK -- WAITING ON MSLOT TO BECOME AVAILABLE
         
         // add self to producer queue and block
+        pcb *self = get_cur_proc();
+        self->pid = getpid(); // set pid
+
         pcb *cur_proc = mbox->producers;
-        while (cur_proc->next_producer) cur_proc = cur_proc->next_producer;
-        cur_proc->next_producer = get_cur_proc();
+        if (!cur_proc) {
+            mbox->producers = self;
+        } else {
+            while (cur_proc->next_producer) cur_proc = cur_proc->next_producer;
+            cur_proc->next_producer = self;
+        }
         blockMe();
 
         // AFTER BLOCK: (a) AVAILABLE MSLOT OR (b) MBOX RELEASED
@@ -321,8 +380,12 @@ int MboxSendHelp(int mbox_id, void *msg_ptr, int msg_size, int block) {
 
         // find the next empty mslot
         int mslot_id = -2;
-        for (int i = 0; i < MAXSLOTS; i++)
-            if (!mslots[i].is_alive) mslot_id = i;
+        for (int i = 0; i < MAXSLOTS; i++) {
+            if (!mslots[i].is_alive) {
+                mslot_id = i;
+                break;
+            }
+        }
 
         // check if the system has run out of global mslots
         // if so, msg could not be queued, throw error
@@ -333,10 +396,15 @@ int MboxSendHelp(int mbox_id, void *msg_ptr, int msg_size, int block) {
         mslot->is_alive = 1;
         strcpy(mslot->msg, msg);
 
+
         // queue the mslot
         Mslot *cur_slot = mbox->first_mslot;
-        while (cur_slot->next_slot) cur_slot = cur_slot->next_slot;
-        cur_slot->next_slot = mslot;
+        if (!cur_slot) {
+            mbox->first_mslot = mslot;
+        } else {
+            while (cur_slot->next_slot) cur_slot = cur_slot->next_slot;
+            cur_slot->next_slot = mslot;
+        }
 
         // decrement the number of available mslots for the mbox
         mbox->numSlots--;
@@ -376,7 +444,7 @@ int recvHelp(int mbox_id, void *msg_ptr, int max_msg_size, int block) {
     if (mbox->first_mslot) {
         // if there is a message queued, consume it
         char *msg = strdup(mbox->first_mslot->msg);
-        msg_size = strlen(msg);
+        msg_size = strlen(msg) + 1; // account for null terminator
 
         // check if the message is too large for the buffer
         // or the buffer is null and the msg is not null
@@ -402,10 +470,21 @@ int recvHelp(int mbox_id, void *msg_ptr, int max_msg_size, int block) {
     } else if (block) {
         // BLOCK -- WAITING ON MSG TO BE QUEUED
 
+        pcb *self = get_cur_proc();
+        self->pid = getpid(); // set pid
+
+        // init msg ptr
+        char buf[max_msg_size];
+        self->msg_ptr = buf;
+
         // add self to consumer queue and block
         pcb *cur_proc = mbox->consumers;
-        while (cur_proc->next_consumer) cur_proc = cur_proc->next_consumer;
-        cur_proc->next_consumer = get_cur_proc();
+        if (!cur_proc) {
+            mbox->consumers = self;
+        } else {
+            while (cur_proc->next_consumer) cur_proc = cur_proc->next_consumer;
+            cur_proc->next_consumer = get_cur_proc();
+        }
         blockMe();
 
         // AFTER BLOCK -- (a) MBOX RELEASED OR (b) MSG HAS BEEN DIRECTLY DELIVERED
@@ -416,7 +495,7 @@ int recvHelp(int mbox_id, void *msg_ptr, int max_msg_size, int block) {
         // consume msg
         pcb *consumer_proc = &shadow_proc_table[getpid() % MAXPROC];
         char *msg = strdup(consumer_proc->msg_ptr);
-        msg_size = strlen(msg);
+        msg_size = strlen(msg) + 1; // account for null terminator
 
         // check if the message is too large for the buffer
         // or the buffer is null and the msg is not null
@@ -431,4 +510,35 @@ int recvHelp(int mbox_id, void *msg_ptr, int max_msg_size, int block) {
 
     restore_interrupts(old_psr);
     return msg_size;
+}
+
+
+void dumpMbox(int mbox_id) {
+    printf("MBOX %d\n", mbox_id);
+    Mbox * mbox = &mboxes[mbox_id];
+
+    printf("MSLOTS\n");
+
+    Mslot *mslot = mbox->first_mslot;
+    int i = 0;
+    while (mslot) {
+        printf("mslot_id = %d; msg = %s\n", i, mslot->msg);
+        i++;
+        mslot = mslot->next_slot;
+    }
+
+    printf("PRODUCERS\n");
+    pcb *producer = mbox->producers;
+    while (producer) {
+        printf("pid = %d; msg = %s\n", producer->pid, producer->msg_ptr ? producer->msg_ptr : "NULL");
+        producer = producer->next_producer;
+    }
+
+    printf("CONSUMERS\n");
+    pcb *consumer = mbox->consumers;
+    while (consumer) {
+        printf("pid = %d; msg = %s\n", consumer->pid, consumer->msg_ptr ? consumer->msg_ptr : "NULL");
+        consumer = consumer->next_consumer;
+    }
+    
 }
