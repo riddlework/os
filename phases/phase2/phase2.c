@@ -14,8 +14,10 @@
 // struct definitions
 typedef struct pcb {
     // TODO: could make one general next ptr
-           char *msg_ptr; // filled by producer, read by consumer
+           void *msg_ptr; // filled by producer, read by consumer
            int msg_size;
+           int msg_received;   // a flag that indicates whether the msg has been received
+
     struct pcb *next_producer;
     struct pcb *next_consumer;
            int            pid;
@@ -313,9 +315,8 @@ int sendHelp(int mbox_id, void *msg_ptr, int msg_size, int block) {
         }
 
         // dequeue and unblock the consumer
-        int pid_toUnblock = consumer_proc->pid;
         mbox->consumers = consumer_proc->next_consumer;
-        unblockProc(pid_toUnblock);
+        unblockProc(consumer_proc->pid);
 
     } else if (mbox->numSlots) {
         // IF AVAILABLE MSLOTS QUEUE MESSAGE
@@ -352,12 +353,16 @@ int sendHelp(int mbox_id, void *msg_ptr, int msg_size, int block) {
         mbox->numSlots--;
 
     } else if (block) {
-        // BLOCK -- WAITING ON MSLOT TO BECOME AVAILABLE
+        // BLOCK UNTIL DIRECT DELIVERY OCCURS
         
-        // add self to producer queue and block
         pcb *self = get_cur_proc();
+        
+        // copy message to process
+        self->msg_ptr = msg_ptr;
+        self->msg_size = msg_size;
         self->pid = getpid(); // set pid
 
+        // add self to producer queue and block
         pcb *cur_proc = mbox->producers;
         if (!cur_proc) {
             mbox->producers = self;
@@ -365,46 +370,11 @@ int sendHelp(int mbox_id, void *msg_ptr, int msg_size, int block) {
             while (cur_proc->next_producer) cur_proc = cur_proc->next_producer;
             cur_proc->next_producer = self;
         }
+
         blockMe();
 
-        // AFTER BLOCK: (a) MBOX RELEASED OR (b) MSLOT AVAILABLE
-
-        // check if the mailbox has been released
+        // check if the mailbox was released
         if (!mbox->is_alive) return -1;
-
-        // QUEUE THE MESSAGE
-
-        // find the next empty mslot
-        int mslot_id = -2;
-        for (int i = 0; i < MAXSLOTS; i++) {
-            if (!mslots[i].is_alive) {
-                mslot_id = i;
-                break;
-            }
-        }
-
-        // check if the system has run out of global mslots
-        // if so, msg could not be queued, throw error
-        if (mslot_id == -2) return -2;
-
-        // fill newly allocated mslot
-        Mslot *mslot = &mslots[mslot_id];
-        mslot->is_alive = 1;
-        memcpy(mslot->msg, msg_ptr, msg_size);
-        mslot->msg_size = msg_size;
-
-
-        // queue the mslot
-        Mslot *cur_slot = mbox->first_mslot;
-        if (!cur_slot) {
-            mbox->first_mslot = mslot;
-        } else {
-            while (cur_slot->next_slot) cur_slot = cur_slot->next_slot;
-            cur_slot->next_slot = mslot;
-        }
-
-        // decrement the number of available mslots for the mbox
-        mbox->numSlots--;
     } else {
         return -2;
     }
@@ -417,7 +387,6 @@ int sendHelp(int mbox_id, void *msg_ptr, int msg_size, int block) {
 int recvHelp(int mbox_id, void *msg_ptr, int max_msg_size, int block) {
     // disable interrupts, save old interrupt state, check for kernel mode
     unsigned int old_psr = check_and_disable(__func__);
-
 
     // check that the mbox_id is valid (bounded)
     if (mbox_id < 0 || mbox_id >= MAXMBOX) return -1;
@@ -451,14 +420,29 @@ int recvHelp(int mbox_id, void *msg_ptr, int max_msg_size, int block) {
         // increment the mbox's number of available mslots
         mbox->numSlots++;
 
-        // unblock a producer if one is waiting in send
-        if (mbox->producers) {
-            int pid_toUnblock = mbox->producers->pid;
-            mbox->producers = mbox->producers->next_producer;
-            unblockProc(pid_toUnblock);
-        }
-    } else if (block) {
-        // BLOCK -- WAITING ON MSG TO BE QUEUED
+        // don't unblock a producer here -- they will get delivered to directly
+    } else if (mbox->producers) {
+        // CONSUME DIRECTLY FROM PRODUCER
+
+        // consume message
+        pcb *producer = mbox->producers;
+        producer->msg_received = 1;
+        
+        // set msg size
+        msg_size = producer->msg_size;
+
+        // check if the message is too large for the buffer
+        // or the buffer is null and the msg is not null
+        if (msg_size > max_msg_size || (!msg_ptr && msg_size)) return -1;
+
+        // copy the message into the buffer -- if buffer not null
+        if (msg_ptr) memcpy(msg_ptr, producer->msg_ptr, msg_size);
+
+        // remove producer from queue and unblock
+        mbox->producers = producer->next_producer;
+        unblockProc(producer->pid);
+    }  else if (block) {
+        // BLOCK -- WAITING ON DIRECT DELIVERY
 
         pcb *self = get_cur_proc();
         self->pid = getpid(); // set pid
@@ -483,7 +467,7 @@ int recvHelp(int mbox_id, void *msg_ptr, int max_msg_size, int block) {
         if (!mbox->is_alive) return -1;
 
         // consume msg
-        pcb *consumer_proc = &shadow_proc_table[getpid() % MAXPROC];
+        pcb *consumer_proc = get_cur_proc();
         msg_size = consumer_proc->msg_size;
 
         // check if the message is too large for the buffer
@@ -492,7 +476,6 @@ int recvHelp(int mbox_id, void *msg_ptr, int max_msg_size, int block) {
 
         // copy the message into the buffer -- if not null
         if (msg_ptr) memcpy(msg_ptr, consumer_proc->msg_ptr, msg_size);
-
     } else {
         return -2;
     }
