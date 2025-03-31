@@ -3,7 +3,6 @@
 #include "phase2.h"
 #include "phase3.h"
 
-
 // function stubs
 void require_kernel_mode(const char *func);
 void gain_mutex();
@@ -21,8 +20,17 @@ void SemV(USLOSS_Sysargs *arg);
 void GetTimeofDay(USLOSS_Sysargs *arg);
 void GetPID(USLOSS_Sysargs *arg);
 
+// struct definitions
+typedef struct semaphore {
+    int semaphore_id;
+    int is_alive;
+} Semaphore;
+
 // globals
 int mutex;
+Semaphore semaphores[MAXSEMS];
+
+
 
 // verifies that the program is currently running in kernel mode and halts if not 
 void require_kernel_mode(const char *func) {
@@ -119,6 +127,13 @@ void SemCreate(USLOSS_Sysargs *arg) {
 
     // gain mutex
     gain_mutex();
+
+    // unpack argument
+    int sem_value = *((int *) arg->arg1);
+    
+    // check for valid arg
+    if (sem_value > MAXSLOTS);
+    int mbox_fail = MboxCreate(sem_value, 0);
 
     // release mutex
     release_mutex();
