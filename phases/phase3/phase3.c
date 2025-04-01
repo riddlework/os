@@ -9,6 +9,7 @@ void gain_mutex();
 void release_mutex();
 void phase3_init();
 void phase3_start_service_processes();
+void set_user_mode();
 
 // syscall stubs
 void Spawn_K(USLOSS_Sysargs *arg);
@@ -78,14 +79,23 @@ void phase3_init() {
 void phase3_start_service_processes() {
 }
 
+void set_user_mode() {
+    int setStatus = USLOSS_PsrSet((USLOSS_PsrGet()|1)-1);
+}
+
+
+
 int trampoline() {
-    // TODO:
     // Switch to user mode 
+    set_user_mode();
+
+    // TODO:
     // Recieve user main function info and args from some mbox
     // Call user main function and execute the users intended work
     // Gather and repack return values into arg
     // Send return values back to user process that executed the syscall
     // Call terminate to clean up the process
+
 }
 
 void Spawn_K(USLOSS_Sysargs *arg) {
@@ -108,8 +118,11 @@ void Spawn_K(USLOSS_Sysargs *arg) {
     // Send user main proc info and args to the mailbox
 
     // spork the trampoline process
-    int (*tramp_func)(void *)   = (int (*)(void *)) trampoline;
-    int pid = spork(name, tramp_func, param_to_pass, stack_size, priority);
+    int pid = spork(name, trampoline, param_to_pass, stack_size, priority);
+
+    // Repack the spork return vals
+    arg->arg1                   = (void *)          pid;
+    arg->arg4                   = (void *)          0;
     
     // release mutex
     release_mutex();
