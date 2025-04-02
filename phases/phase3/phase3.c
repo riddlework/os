@@ -85,17 +85,28 @@ void set_user_mode() {
 
 
 
-int trampoline() {
+int trampoline(void *mboxId) {
+
+    // instantiate the recv out ptr
+    void *arg;
+    
+    // Recv user main stuff
+    //
+    // THIS IS CAUSING A SEGFAULT
+    //
+    int recvVal = MboxRecv(mboxId, arg, sizeof(void*));
+
+    // unpack arguments
+    int (*start_func)(void *)   = (int (*)(void *)) ((struct USLOSS_Sysargs *)arg)->arg1;
+    void *param_to_pass         = (void *)          ((struct USLOSS_Sysargs *)arg)->arg2;
+
     // Switch to user mode 
     set_user_mode();
-
-    // TODO:
-    // Recieve user main function info and args from some mbox
-    // Call user main function and execute the users intended work
-    // Gather and repack return values into arg
-    // Send return values back to user process that executed the syscall
-    // Call terminate to clean up the process
-
+    
+    // Run user main
+    int result = start_func(param_to_pass);
+    
+    Terminate();
 }
 
 void Spawn_K(USLOSS_Sysargs *arg) {
@@ -105,28 +116,22 @@ void Spawn_K(USLOSS_Sysargs *arg) {
     // gain mutex
     gain_mutex();
 
-    // unpack arguments
-    int (*start_func)(void *)   = (int (*)(void *)) arg->arg1;
-    void *param_to_pass         = (void *)          arg->arg2;
     int   stack_size            = (int)(long)       arg->arg3;
     int   priority              = (int)(long)       arg->arg4;
     char *name                  = (char *)          arg->arg5;
 
-    // TODO:
-    // check for valid args (The system cannot be crashed by invalid arguments)
-    // Create a mailbox to send process info 
-    // Send user main proc info and args to the mailbox
+    // create mbox and send args
+    int mboxId = MboxCreate(1, sizeof(void*));
+    int sendVal = MboxSend(mboxId, arg, sizeof(void*));
 
     // spork the trampoline process
-    int pid = spork(name, trampoline, param_to_pass, stack_size, priority);
-
-    // Repack the spork return vals
-    arg->arg1                   = (void *)          pid;
-    arg->arg4                   = (void *)          0;
+    int childPid = spork(name, trampoline, mboxId, stack_size, priority);
     
+    // repack the pid 
+    arg->arg1 = childPid;
+
     // release mutex
     release_mutex();
-
 }
 
 void Wait_K(USLOSS_Sysargs *arg) {
@@ -146,6 +151,7 @@ void Wait_K(USLOSS_Sysargs *arg) {
     arg->arg1 = (void *) join_pid;
     arg->arg2 = (void *) status;
 
+    
     // if there are no children, then arg4 = -2. Otherwise 0.
     arg->arg4 = 0;
     if (join_pid == -2) {arg->arg4 = -2;}
