@@ -172,3 +172,18 @@ int SemFree(int semaphore)
     return (int)(long)args.arg4;
 }
 
+
+
+void DumpProcesses(void)
+{
+    require_user_mode(__func__);
+
+    USLOSS_Sysargs args;
+    memset(&args, 0, sizeof(args));
+
+    args.number = SYS_DUMPPROCESSES;
+    USLOSS_Syscall(&args);
+
+    return;
+}
+

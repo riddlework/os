@@ -44,6 +44,52 @@ Child2(): spawned process 42
 Child2(): spawned process 43
 Child2(): spawned process 44
 Child2(): spawned process 45
+ PID  PPID  NAME              PRIORITY  STATE
+   1     0  init              6         Runnable
+   2     1  testcase_main     3         Blocked(waiting for child to quit)
+   3     2  start3            3         Blocked(waiting for child to quit)
+   4     3  Child1            4         Runnable
+   5     4  Child2            2         Running
+   6     5  Child2a           3         Runnable
+   7     5  Child2a           3         Runnable
+   8     5  Child2a           3         Runnable
+   9     5  Child2a           3         Runnable
+  10     5  Child2a           3         Runnable
+  11     5  Child2a           3         Runnable
+  12     5  Child2a           3         Runnable
+  13     5  Child2a           3         Runnable
+  14     5  Child2a           3         Runnable
+  15     5  Child2a           3         Runnable
+  16     5  Child2a           3         Runnable
+  17     5  Child2a           3         Runnable
+  18     5  Child2a           3         Runnable
+  19     5  Child2a           3         Runnable
+  20     5  Child2a           3         Runnable
+  21     5  Child2a           3         Runnable
+  22     5  Child2a           3         Runnable
+  23     5  Child2a           3         Runnable
+  24     5  Child2a           3         Runnable
+  25     5  Child2a           3         Runnable
+  26     5  Child2a           3         Runnable
+  27     5  Child2a           3         Runnable
+  28     5  Child2a           3         Runnable
+  29     5  Child2a           3         Runnable
+  30     5  Child2a           3         Runnable
+  31     5  Child2a           3         Runnable
+  32     5  Child2a           3         Runnable
+  33     5  Child2a           3         Runnable
+  34     5  Child2a           3         Runnable
+  35     5  Child2a           3         Runnable
+  36     5  Child2a           3         Runnable
+  37     5  Child2a           3         Runnable
+  38     5  Child2a           3         Runnable
+  39     5  Child2a           3         Runnable
+  40     5  Child2a           3         Runnable
+  41     5  Child2a           3         Runnable
+  42     5  Child2a           3         Runnable
+  43     5  Child2a           3         Runnable
+  44     5  Child2a           3         Runnable
+  45     5  Child2a           3         Runnable
 Child2(): Terminating self and all my children
 Child2a(): starting the code for Child2a: pid=6
 Child2a(): starting the code for Child2a: pid=7

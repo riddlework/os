@@ -69,6 +69,8 @@ int Child2(void *arg)
             USLOSS_Console("%s(): spawned attempt failed, pid = %d\n", arg, pid);
         }
 
+    DumpProcesses();
+
     USLOSS_Console("%s(): Terminating self and all my children\n", arg);
     return 10;
 }

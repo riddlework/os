@@ -7,12 +7,23 @@
 #include <phase1.h>
 #include <phase2.h>
 #include <phase3_usermode.h>
+#include <phase3_kernelInterfaces.h>
 #include <stdio.h>
 
 int Child1(void *);
 int Child2(void *);
 
 int semaphore;
+
+
+
+/* these functions are not called by the Phase 3 testcases (yet).  But this
+ * code verifies that the kernel functions are properly named.
+ */
+int (*fp1)(int,int*) = &kernSemCreate;
+int (*fp2)(int)      = &kernSemP;
+int (*fp3)(int)      = &kernSemV;
+
 
 
 int start3(void *arg)

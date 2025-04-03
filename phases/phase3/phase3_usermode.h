@@ -18,4 +18,6 @@ extern int  SemV(int semaphore);
 
    // NOTE: No SemFree() call, it was removed
 
+extern void DumpProcesses(void);
+
 #endif
