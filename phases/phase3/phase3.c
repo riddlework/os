@@ -47,6 +47,16 @@ void require_kernel_mode(const char *func) {
     }
 }
 
+void set_user_mode() {
+    unsigned int cur_psr = USLOSS_PsrGet();
+
+    // set user mode using the bit masks defined in usloss.h
+    // basically turns off kernel mode
+    int status = USLOSS_PsrSet(cur_psr & ~USLOSS_PSR_CURRENT_MODE);
+
+    // TODO: perform error checking for status?
+}
+
 void gain_mutex() {
     MboxSend(mutex, NULL, 0);
 }
@@ -82,32 +92,27 @@ void phase3_init() {
 void phase3_start_service_processes() {
 }
 
-void set_user_mode() {
-    unsigned int cur_psr = USLOSS_PsrGet();
-
-    // set user mode using the bit masks defined in usloss.h
-    // basically turns off kernel mode
-    int status = USLOSS_PsrSet(cur_psr & USLOSS_PSR_CURRENT_MASK);
-}
 
 
 
 int trampoline(void *arg) {
 
     // cast passed arg to int (the mbox id was passed)
-    int mbox_id = (int)(long) arg;
+    int mbox_id = (int)(long)arg;
 
     // instantiate the recv out ptr
-    USLOSS_Sysargs *sys_args;
+    USLOSS_Sysargs sys_args;
     
-
     // recv user main func + param
-    int recvVal = MboxRecv(mbox_id, (void *)sys_args, sizeof(void*));
+    int recvVal = MboxRecv(mbox_id, (void *)&sys_args, sizeof(void *)+1);
+    
+    // TODO: error checking for recv?
+
     // unpack arguments
-    int (*start_func)(void *) = (int (*)(void *)) sys_args->arg1;
+    int (*start_func)(void *) = (int (*)(void *))sys_args.arg1;
 
     // don't have to cast this because it's already a void *
-    void *param_to_pass = sys_args->arg2;
+    void *param_to_pass = sys_args.arg2;
 
     // Switch to user mode 
     set_user_mode();
@@ -130,8 +135,8 @@ void Spawn_K(USLOSS_Sysargs *arg) {
     char *name                  = (char *)          arg->arg5;
 
     // create mbox and send args
-    int mboxId = MboxCreate(1, sizeof(void*));
-    int sendVal = MboxSend(mboxId, arg, sizeof(void*));
+    int mboxId = MboxCreate(1, sizeof(USLOSS_Sysargs *));
+    int sendVal = MboxSend(mboxId, (void *)arg, sizeof(USLOSS_Sysargs *));
 
     // spork the trampoline process
     int childPid = spork(name, trampoline, (void *)(long)mboxId, stack_size, priority);
@@ -151,19 +156,18 @@ void Wait_K(USLOSS_Sysargs *arg) {
     gain_mutex();
 
     // unpack arguments
-    int *pid                    = (int *)           arg->arg1;
     int *status;
 
     // Call join to get return values
-    int join_pid = join(status);
+    int pid_of_child_joined_to = join(status);
 
-    arg->arg1 = (void *)(long)join_pid;
+    arg->arg1 = (void *)(long)pid_of_child_joined_to;
     arg->arg2 = (void *)status;
 
     
     // if there are no children, then arg4 = -2. Otherwise 0.
     arg->arg4 = 0;
-    if (join_pid == -2) arg->arg4 = (void *)(long)-2;
+    if (pid_of_child_joined_to == -2) arg->arg4 = (void *)(long)-2;
 
     // release mutex
     release_mutex();
@@ -173,13 +177,21 @@ void Terminate_K(USLOSS_Sysargs *arg) {
     // check for kernel mode
     require_kernel_mode(__func__);
 
+    // gain mutex
+    gain_mutex();
+
     // call join until it returns -2 then call quit with the provided status
     int quit_status = (int)(long)arg->arg1; 
-    int *status;
-    int join_val = join(status);
-    while (join_val != -2) {
-        join_val = join(status);
-    }
+    int status;
+    int join_val;
+    do {
+        join_val = join(&status);
+
+    } while (join_val != -2);
+
+    // release mutex before quitting
+    release_mutex();
+
     quit(quit_status);
 }
 
