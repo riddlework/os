@@ -21,6 +21,9 @@ void SemV_K(USLOSS_Sysargs *arg);
 void GetTimeofDay_K(USLOSS_Sysargs *arg);
 void GetPID_K(USLOSS_Sysargs *arg);
 
+// tell the compiler that the definition for this can be found somewhere else
+extern void Terminate();
+
 // struct definitions
 typedef struct semaphore {
     int semaphore_id;
@@ -80,25 +83,31 @@ void phase3_start_service_processes() {
 }
 
 void set_user_mode() {
-    int setStatus = USLOSS_PsrSet((USLOSS_PsrGet()|1)-1);
+    unsigned int cur_psr = USLOSS_PsrGet();
+
+    // set user mode using the bit masks defined in usloss.h
+    // basically turns off kernel mode
+    int status = USLOSS_PsrSet(cur_psr & USLOSS_PSR_CURRENT_MASK);
 }
 
 
 
-int trampoline(void *mboxId) {
+int trampoline(void *arg) {
+
+    // cast passed arg to int (the mbox id was passed)
+    int mbox_id = (int)(long) arg;
 
     // instantiate the recv out ptr
-    void *arg;
+    USLOSS_Sysargs *sys_args;
     
-    // Recv user main stuff
-    //
-    // THIS IS CAUSING A SEGFAULT
-    //
-    int recvVal = MboxRecv(mboxId, arg, sizeof(void*));
 
+    // recv user main func + param
+    int recvVal = MboxRecv(mbox_id, (void *)sys_args, sizeof(void*));
     // unpack arguments
-    int (*start_func)(void *)   = (int (*)(void *)) ((struct USLOSS_Sysargs *)arg)->arg1;
-    void *param_to_pass         = (void *)          ((struct USLOSS_Sysargs *)arg)->arg2;
+    int (*start_func)(void *) = (int (*)(void *)) sys_args->arg1;
+
+    // don't have to cast this because it's already a void *
+    void *param_to_pass = sys_args->arg2;
 
     // Switch to user mode 
     set_user_mode();
@@ -125,10 +134,10 @@ void Spawn_K(USLOSS_Sysargs *arg) {
     int sendVal = MboxSend(mboxId, arg, sizeof(void*));
 
     // spork the trampoline process
-    int childPid = spork(name, trampoline, mboxId, stack_size, priority);
+    int childPid = spork(name, trampoline, (void *)(long)mboxId, stack_size, priority);
     
-    // repack the pid 
-    arg->arg1 = childPid;
+    // repack the pid -- must cast to void *
+    arg->arg1 = (void *)(long)childPid;
 
     // release mutex
     release_mutex();
@@ -148,13 +157,13 @@ void Wait_K(USLOSS_Sysargs *arg) {
     // Call join to get return values
     int join_pid = join(status);
 
-    arg->arg1 = (void *) join_pid;
-    arg->arg2 = (void *) status;
+    arg->arg1 = (void *)(long)join_pid;
+    arg->arg2 = (void *)status;
 
     
     // if there are no children, then arg4 = -2. Otherwise 0.
     arg->arg4 = 0;
-    if (join_pid == -2) {arg->arg4 = -2;}
+    if (join_pid == -2) arg->arg4 = (void *)(long)-2;
 
     // release mutex
     release_mutex();
@@ -165,7 +174,7 @@ void Terminate_K(USLOSS_Sysargs *arg) {
     require_kernel_mode(__func__);
 
     // call join until it returns -2 then call quit with the provided status
-    int *quit_status            = (int *)           arg->arg1; 
+    int quit_status = (int)(long)arg->arg1; 
     int *status;
     int join_val = join(status);
     while (join_val != -2) {
