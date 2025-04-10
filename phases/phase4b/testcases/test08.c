@@ -24,7 +24,7 @@
 
 int Child(void *arg) 
 {
-    int term = atoi(arg);
+    int term = (int)(long)arg;
     char buf[80] = "";
     int len, read_length;
   
@@ -51,15 +51,13 @@ int Child(void *arg)
 int start4(void *arg)
 {
     int  pid, status, i;
-    char buf[4][12];
     char child_buf[12];
 
     USLOSS_Console("start4(): Spawn four children.  Each child reads from a different terminal.  The child reading the shortest line will finish first, etc.\n");
 
     for (i = 0; i < 4; i++) {
-        sprintf(buf[i], "%d", i);
         sprintf(child_buf, "Child%d", i);
-        status = Spawn(child_buf, Child, buf[i], USLOSS_MIN_STACK, 4, &pid);
+        status = Spawn(child_buf, Child, (void*)(long)i, USLOSS_MIN_STACK, 4, &pid);
         assert(status == 0);
     }
 

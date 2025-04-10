@@ -20,7 +20,7 @@
 int Child(void *arg) 
 {
     int begin, end, time;
-    int me = atoi(arg);
+    int me = (int)(long)arg;
 
     USLOSS_Console("Child%d(): Going to sleep for 10 seconds\n", me);
     GetTimeofDay(&begin);
@@ -50,11 +50,11 @@ int start4(void *arg)
     USLOSS_Console("          waking up, each child checks if its sleep time was at\n");
     USLOSS_Console("          least 10 seconds.\n");
 
-    Spawn("Child1", Child, "1", USLOSS_MIN_STACK, 4, &pid);
-    Spawn("Child2", Child, "2", USLOSS_MIN_STACK, 4, &pid);
-    Spawn("Child3", Child, "3", USLOSS_MIN_STACK, 4, &pid);
-    Spawn("Child4", Child, "4", USLOSS_MIN_STACK, 4, &pid);
-    Spawn("Child5", Child, "5", USLOSS_MIN_STACK, 4, &pid);
+    Spawn("Child1", Child, (void*)(long)1, USLOSS_MIN_STACK, 4, &pid);
+    Spawn("Child2", Child, (void*)(long)2, USLOSS_MIN_STACK, 4, &pid);
+    Spawn("Child3", Child, (void*)(long)3, USLOSS_MIN_STACK, 4, &pid);
+    Spawn("Child4", Child, (void*)(long)4, USLOSS_MIN_STACK, 4, &pid);
+    Spawn("Child5", Child, (void*)(long)5, USLOSS_MIN_STACK, 4, &pid);
 
     Wait(&pid, &status);
     Wait(&pid, &status);

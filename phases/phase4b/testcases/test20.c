@@ -22,7 +22,7 @@
 
 int Child1(void *arg)
 {
-    int term = atoi(arg);
+    int term = (int)(long)arg;
     char buf[MAXLINE] = "";
     int read_length;
     int i;
@@ -53,7 +53,7 @@ int Child2(void *arg)
 {
     char buffer[MAXLINE];
     int  result, size;
-    int  unit = atoi(arg);
+    int  unit = (int)(long)arg;
     int  i;
 
     USLOSS_Console("Child_2%d(): start\n", unit);
@@ -96,7 +96,6 @@ extern int testcase_timeout;   // defined in the testcase common code
 int start4(void *arg)
 {
     int  pid, status, i;
-    char buf[4][12];
     char child_buf[12];
 
     testcase_timeout = 60;
@@ -107,14 +106,12 @@ int start4(void *arg)
 
     for (i = 0; i < 4; i++)
     {
-       sprintf(buf[i], "%d", i);
-
        sprintf(child_buf, "Child%d", i);
-       status = Spawn(child_buf, Child1, buf[i], USLOSS_MIN_STACK,2, &pid);
+       status = Spawn(child_buf, Child1, (void*)(long)i, USLOSS_MIN_STACK,2, &pid);
        assert(status == 0);
 
        sprintf(child_buf, "Child%d", i+4);
-       status = Spawn(child_buf, Child2, buf[i], USLOSS_MIN_STACK,2, &pid);
+       status = Spawn(child_buf, Child2, (void*)(long)i, USLOSS_MIN_STACK,2, &pid);
        assert(status == 0);
     }
 

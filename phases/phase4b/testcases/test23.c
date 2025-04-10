@@ -25,7 +25,7 @@
 int ChildS(void *arg)
 {
     int tod1,tod2;
-    int my_num = atoi(arg);
+    int my_num = (int)(long)arg;
     int seconds;
 
     seconds = (5 - my_num);
@@ -161,7 +161,6 @@ extern int testcase_timeout;   // defined in the testcase common code
 int start4(void *arg)
 {
     int  pid, status, i;
-    char buf[5][12];
     char name[] = "ChildS";
 
     testcase_timeout = 60;
@@ -169,9 +168,8 @@ int start4(void *arg)
     USLOSS_Console("start4(): Spawning 5 children to sleep\n");
     for (i = 0; i < 5; i++)
     {
-        sprintf(buf[i], "%d", i);
-        name[5] = buf[i][0];
-        status = Spawn(name, ChildS, buf[i], USLOSS_MIN_STACK,2, &pid);
+        sprintf(name, "Child%d", i);
+        status = Spawn(name, ChildS, (void*)(long)i, USLOSS_MIN_STACK,2, &pid);
     }
 
     USLOSS_Console("start4(): Spawning 2 children to termfuncs\n");

@@ -22,14 +22,12 @@ int start4(void *arg)
 {
     int  kidpid, status;
     int  i;
-    char buf[4][12];
 
     testcase_timeout = 60;
 
     USLOSS_Console("start4(): Spawn 4 children. Each child writes one line to each terminal\n");
     for (i = 0; i < 4; i++) {
-        sprintf(buf[i], "%d", i);
-        Spawn("Child", Child, buf[i], 2 * USLOSS_MIN_STACK, 4, &kidpid);
+        Spawn("Child", Child, (void*)(long)i, 2 * USLOSS_MIN_STACK, 4, &kidpid);
     }
 
     USLOSS_Console("start4(): calling Wait four times\n");
@@ -49,7 +47,7 @@ int Child(void *arg)
 {
     char buffer[MAXLINE];
     int  result, size;
-    int  unit = atoi(arg);
+    int  unit = (int)(long)arg;
     int  i;
 
     USLOSS_Console("Child(%d): started\n", unit);
