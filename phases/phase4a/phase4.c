@@ -66,6 +66,7 @@ void phase4_init() {
 }
 
 void phase4_start_service_processes() {
+    // need to start four daemons here?
 
 }
 
@@ -187,18 +188,4 @@ int kern_disk_write(void *buffer, int unit, int track, int firstBlock, int block
 
 
 
-
-// devices are read using USLOSS_DeviceInput
-// devices are written using USLOSS_DeviceOutput
-
-// TERM DEVICE
-// there are four terminal devices
-// 16-bit status register accessed via USLOSS_DeviceInput
-//  -- interrupt generated each time there is a change in the status register
-// 16-bit control register accessed via USLOSS_DeviceOutput
-
-// should set recv int enable bit for all terminals and leave them on
-// set exmit int enable bit only when there are chars to transmit on terminal
-
-// make sure to keep xmit/recv interrupts on when xmit/recv-ing chars
 
