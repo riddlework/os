@@ -1,6 +1,8 @@
 devices are read using USLOSS_DeviceInput
 devices are written using USLOSS_DeviceOutput
 
+waitDevice waits for an interrupt to fire on a given device
+
 CLOCK
 Have to implement the Sleep() system call.
 -- only one process should call waitDevice
@@ -8,6 +10,18 @@ Have to implement the Sleep() system call.
 -- process increments counter each time another interrupt received
 -- use mailboxes to wake up sleeping processes, when their wakeup time arrives
 Clock interrupt occurs about every 100ms => 1sec = 10 interrupts
+
+How would you implement Sleep() if only one program could call it?
+-- say process A sleeps for X seconds
+-- for process A, record:
+    -- pid
+    -- seconds to sleep for
+-- call blockMe() in process A
+-- somewhere else in a while(1) loop:
+    -- call waitDevice
+    -- increment a counter
+    -- when counter = X*10, break
+-- call unblockProc on the process
 
 
 TERM DEVICE
