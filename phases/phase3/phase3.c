@@ -3,6 +3,7 @@
 #include "phase1.h"
 #include "phase2.h"
 #include "phase3.h"
+#include <unistd.h>
 
 // function stubs
 void require_kernel_mode(const char *func);
@@ -11,21 +12,22 @@ void release_mutex(const char *func);
 void phase3_init();
 void phase3_start_service_processes();
 void set_user_mode();
-int trampoline(void *);
+int  trampoline(void *);
 
 
 // syscall stubs
-void Spawn_K(USLOSS_Sysargs *arg);
-void Wait_K(USLOSS_Sysargs *arg);
-void Terminate_K(USLOSS_Sysargs *arg);
-void SemCreate_K(USLOSS_Sysargs *arg);
-void SemP_K(USLOSS_Sysargs *arg);
-void SemV_K(USLOSS_Sysargs *arg);
-void GetTimeofDay_K(USLOSS_Sysargs *arg);
-void GetPID_K(USLOSS_Sysargs *arg);
-int kernSemCreate(int value, int *semaphore);
-int kernSemP(int semaphore);
-int kernSemV(int semaphore);
+void Spawn_K       (USLOSS_Sysargs *arg      );
+void Wait_K        (USLOSS_Sysargs *arg      );
+void Terminate_K   (USLOSS_Sysargs *arg      );
+void SemCreate_K   (USLOSS_Sysargs *arg      );
+void SemP_K        (USLOSS_Sysargs *arg      );
+void SemV_K        (USLOSS_Sysargs *arg      );
+void GetTimeofDay_K(USLOSS_Sysargs *arg      );
+void GetPID_K      (USLOSS_Sysargs *arg      );
+int  kernSemCreate (int             value     ,
+                    int            *semaphore);
+int  kernSemP      (int             semaphore);
+int  kernSemV      (int             semaphore);
 
 // tell the compiler that the definition for this can be found somewhere else
 extern void Terminate(int status);
@@ -37,18 +39,18 @@ typedef struct pcb {
 } pcb;
 
 typedef struct semaphore {
-    int sem_id;
+    /*int sem_id;*/
+    int mbox;
+    int mbox_num_slots;
     int is_alive;
     int value;
-    pcb *blocked_queue;
+    /*pcb *blocked_queue;*/
 } Semaphore;
 
 // globals
 int mutex;
 Semaphore sems[MAXSEMS];
 static pcb shadow_proc_table[MAXPROC];
-
-
 
 // verifies that the program is currently running in kernel mode and halts if not 
 void require_kernel_mode(const char *func) {
@@ -157,6 +159,9 @@ int trampoline(void *arg) {
     int recvVal = MboxRecv(mbox_id, &start_func, sizeof(void *));
     recvVal = MboxRecv(mbox_id, &param_to_pass, sizeof(void *));
 
+    // release mbox here
+    MboxRelease(mbox_id);
+
     // TODO: error checking for recv?
 
     // release mutex
@@ -169,6 +174,9 @@ int trampoline(void *arg) {
     int status = start_func(param_to_pass);
     
     Terminate(status);
+
+    // compiler hint that this function never returns
+    while(1);
 }
 
 void Wait_K(USLOSS_Sysargs *arg) {
@@ -281,9 +289,12 @@ int kernSemCreate(int value, int *semaphore) {
     }
 
     Semaphore *sem = &sems[sem_id];
-    sem->sem_id = sem_id;
+    /*sem->sem_id = sem_id;*/
+    sem->mbox = MboxCreate(0, 0);
+    sem->mbox_num_slots = value;
     sem->is_alive = 1;
     sem->value = value;
+    /*USLOSS_Console("semaphore created with mbox %d and value %d\n", sem->mbox, sem->value);*/
 
     // pack return values
     *semaphore = sem_id;
@@ -320,6 +331,7 @@ void SemP_K(USLOSS_Sysargs *arg) {
 }
 
 int kernSemP(int semaphore) {
+    static int i = 0;
     // check for kernel mode
     require_kernel_mode(__func__);
 
@@ -336,34 +348,58 @@ int kernSemP(int semaphore) {
 
     // gain a reference to the semaphore
     Semaphore *sem = &sems[semaphore];
+
+
+    /*if (sem->value <= sem->mbox_num_slots) {*/
     if (sem->value == 0) {
-        // add self to sem's blocked queue and block
-        int pid = getpid();
-        pcb *to_queue = &shadow_proc_table[pid % MAXPROC];
-        to_queue->pid = pid;
-
-        pcb *cur = sem->blocked_queue;
-        if (!cur) {
-            sem->blocked_queue = to_queue;
-        } else {
-            while (cur->next) cur = cur->next;
-            cur->next = to_queue;
-        }
-
-        // release the mutex before blocking
+        // release the mutex before sending``
         release_mutex(__func__);
 
-        blockMe();
+        USLOSS_Console("MboxSend is about to send to mbox %d\n", sem->mbox);
+        sleep(1);
+        int send = MboxSend(sem->mbox, NULL, 0);
+        USLOSS_Console("send to mbox %d returned: %d\n", sem->mbox, send);
 
-        // gain back mutex
+        /*int recv = MboxCondRecv(sem->mbox, NULL, 0);*/
+        /*USLOSS_Console("recv %d\n", recv);*/
+
         gain_mutex(__func__);
+        
     }
+    USLOSS_Console("sem->value after possible mbox send: %d\n", sem->value);
 
-    // P (on the pizza)
     sem->value--;
-
-    // release mutex
+    // release the mutex before sending
     release_mutex(__func__);
+
+    /*if (sem->value == 0) {*/
+    /*    // add self to sem's blocked queue and block*/
+    /*    int pid = getpid();*/
+    /*    pcb *to_queue = &shadow_proc_table[pid % MAXPROC];*/
+    /*    to_queue->pid = pid;*/
+    /**/
+    /*    pcb *cur = sem->blocked_queue;*/
+    /*    if (!cur) {*/
+    /*        sem->blocked_queue = to_queue;*/
+    /*    } else {*/
+    /*        while (cur->next) cur = cur->next;*/
+    /*        cur->next = to_queue;*/
+    /*    }*/
+    /**/
+    /*    // release the mutex before blocking*/
+    /*    release_mutex(__func__);*/
+    /**/
+    /*    blockMe();*/
+    /**/
+    /*    // gain back mutex*/
+    /*    gain_mutex(__func__);*/
+    /*}*/
+    /**/
+    /*// P (on the pizza)*/
+    /*sem->value--;*/
+    /**/
+    /*// release mutex*/
+    /*release_mutex(__func__);*/
 
     return 0;
 }
@@ -414,15 +450,27 @@ int kernSemV(int semaphore) {
     // V (on the pizza)
     sem->value++;
 
-    // unblock a proc that's blocked on the semaphore if one exists
-    if (sem->blocked_queue) {
-        int pid_toUnblock = sem->blocked_queue->pid;
-        sem->blocked_queue = sem->blocked_queue->next;
-        unblockProc(pid_toUnblock);
-    }
-
     // release mutex
     release_mutex(__func__);
+
+    // wake a blocked process if there is one
+    int recv = MboxCondRecv(sem->mbox, NULL, 0);
+    USLOSS_Console("MboxCondRecv returned %d\n", recv);
+    /*if (sem->value >= sem->mbox_num_slots) {*/
+    /*    USLOSS_Console("about to recv from mbox %d\n", sem->mbox);*/
+    /*    int recv = MboxRecv(sem->mbox, NULL, 0);*/
+    /*}*/
+
+
+    /*sem->value++;*/
+    /**/
+    /*// unblock a proc that's blocked on the semaphore if one exists*/
+    /*if (sem->blocked_queue) {*/
+    /*    int pid_toUnblock = sem->blocked_queue->pid;*/
+    /*    sem->blocked_queue = sem->blocked_queue->next;*/
+    /*    unblockProc(pid_toUnblock);*/
+    /*}*/
+
 
     return 0;
 }

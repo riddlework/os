@@ -2,35 +2,30 @@
 #include "phase3_kernelInterfaces.h"
 #include "phase4.h"
 #include <usloss.h>
-#include <stdlib.h>
+
+// a macro for checking that the program is currently running in kernel mode
+#define CHECKMODE { \
+    if (!(USLOSS_PsrGet() & USLOSS_PSR_CURRENT_MODE)) { \
+        USLOSS_Console("ERROR: Someone attempted to call a function while in user mode!\n"); \
+        USLOSS_Halt(1);  \
+    } \
+}
 
 // function stubs
-void require_kernel_mode(const char *func);
+/*void require_kernel_mode(const char *func);*/
 void gain_mutex(const char *func);
 void release_mutex(const char *func);
 void phase4_start_service_processes();
 
-int kern_sleep(int seconds);
-static void term_handler(int dev, void *arg);
-int kern_term_read(char *buffer, int bufSize, int unit, int *lenOut);
-int kern_term_write(char *buffer, int bufSize, int unit, int *lenOut);
-static void disk_handler(int dev, void *arg);
-int kern_disk_size(int unit, int *sector, int *track, int *disk);
-int kern_disk_read(void *buffer, int unit, int track, int firstBlock, int blocks, int *statusOut);
-int kern_disk_write(void *buffer, int unit, int track, int firstBlock, int blocks, int *statusOut);
+void kern_sleep     (USLOSS_Sysargs *arg);
+void kern_term_read (USLOSS_Sysargs *arg);
+void kern_term_write(USLOSS_Sysargs *arg);
+void kern_disk_read (USLOSS_Sysargs *arg);
+void kern_disk_write(USLOSS_Sysargs *arg);
+void kern_disk_size (USLOSS_Sysargs *arg);
 
 // globals
 int mutex;
-
-// verifies that the program is currently running in kernel mode and halts if not 
-void require_kernel_mode(const char *func) {
-    unsigned int cur_psr = USLOSS_PsrGet();
-    if (!(cur_psr & USLOSS_PSR_CURRENT_MODE)) {
-        // not in kernel mode, halt simulation
-        USLOSS_Console("ERROR: Someone attempted to call %s while in user mode!\n", func);
-        USLOSS_Halt(1);
-    }
-}
 
 void gain_mutex(const char *func) {
     /*USLOSS_Console("%s IS TRYING TO GAIN THE MUTEX!\n", func);*/
@@ -48,7 +43,7 @@ void release_mutex(const char *func) {
 
 void phase4_init() {
     // require kernel mode
-    require_kernel_mode(__func__);
+    CHECKMODE;
 
     // initialize the mutex using a semaphore
     int fail = kernSemCreate(1, &mutex);
@@ -57,9 +52,21 @@ void phase4_init() {
     // gain the mutex
     gain_mutex(__func__);
     
-    // load the int vec
-    USLOSS_IntVec[USLOSS_TERM_INT] = term_handler;
-    USLOSS_IntVec[USLOSS_DISK_INT] = disk_handler;
+    // load the system call vec
+    systemCallVec[SYS_SLEEP]     =      kern_sleep;
+    systemCallVec[SYS_TERMREAD]  =  kern_term_read;
+    systemCallVec[SYS_TERMWRITE] = kern_term_write;
+    systemCallVec[SYS_DISKREAD]  =  kern_disk_read; 
+    systemCallVec[SYS_DISKWRITE] = kern_disk_write; 
+    systemCallVec[SYS_DISKSIZE]  =  kern_disk_size; 
+
+
+    // TODO:
+    // definitely turn on the terminal read (recv) interrupt here
+    // maybe turn on the terminal write (xmit) interrupt here -- or only when process is writing?
+
+    // read the disk sizes here and save them as global varaibles
+    // queuing and sequencing disk requests
 
     // release the mutex
     release_mutex(__func__);
@@ -67,125 +74,129 @@ void phase4_init() {
 
 void phase4_start_service_processes() {
     // need to start four daemons here?
+    // start sleep daemon here
 
 }
 
-int kern_sleep(int seconds) {
+void kern_sleep(USLOSS_Sysargs *arg) {
     // check for kernel mode
-    require_kernel_mode(__func__);
+    CHECKMODE;
 
     // gain mutex
     gain_mutex(__func__);
+
+    // arg1 - seconds to sleep for
 
     // release mutex
     release_mutex(__func__);
 }
 
-static void term_handler(int dev, void *arg) {
+void kern_term_read(USLOSS_Sysargs *arg) {
     // check for kernel mode
-    require_kernel_mode(__func__);
+    CHECKMODE;
 
     // gain mutex
     gain_mutex(__func__);
 
-    // retreieve terminal number from arg
-    int term_no = (int)(long) arg;
+    // unpack arguments
+    char *buf     =    (char *)arg->arg1;
+    int   bufSize = (int)(long)arg->arg2;
+    int   unit    = (int)(long)arg->arg3;
 
-    // retrieve input status
-    int status;
-    int input_status = USLOSS_DeviceInput(dev, term_no, &status);
-
-    // send status as payload for msg
-    /*int mbox_id = term_mbox_ids[term_no];*/
-    /*MboxCondSend(mbox_id, (void *) &status, sizeof(int));*/
+    // repack return values
+    int lenOut;
+    arg->arg4 = (void *)(long)lenOut;
 
     // release mutex
     release_mutex(__func__);
 }
 
-int kern_term_read(char *buffer, int bufSize, int unit, int *lenOut) {
+void kern_term_write(USLOSS_Sysargs *arg) {
     // check for kernel mode
-    require_kernel_mode(__func__);
+    CHECKMODE;
 
     // gain mutex
     gain_mutex(__func__);
+
+    // unpack arguments
+    char *buf     =    (char *)arg->arg1;
+    int   bufSize = (int)(long)arg->arg2;
+    int   unit    = (int)(long)arg->arg3;
+
+    // repack return value
+    int lenOut;
+    arg->arg4 = (void *)(long)lenOut;
 
     // release mutex
     release_mutex(__func__);
 }
 
-int kern_term_write(char *buffer, int bufSize, int unit, int *lenOut) {
+
+void kern_disk_read(USLOSS_Sysargs *arg) {
     // check for kernel mode
-    require_kernel_mode(__func__);
+    CHECKMODE;
 
     // gain mutex
     gain_mutex(__func__);
 
-    // release mutex
-    release_mutex(__func__);
-}
+    // unpack arguments
+    void *diskBuffer =            arg->arg1;
+    int   sectors    = (int)(long)arg->arg2;
+    int   track      = (int)(long)arg->arg3;
+    int   first      = (int)(long)arg->arg4;
+    int   unit       = (int)(long)arg->arg5;
 
-static void disk_handler(int dev, void *arg) {
-    // check for kernel mode
-    require_kernel_mode(__func__);
-
-    // gain mutex
-    gain_mutex(__func__);
-
-    // release mutex
-    release_mutex(__func__);
-
-    // retrieve disk number from arg
-    int disk_no = (int)(long) arg;
-
-    // retrieve input status
-    int status;
-    int input_status = USLOSS_DeviceInput(dev, disk_no, &status);
-
-    // send status as payload for msg
-    /*int mbox_id = disk_mbox_ids[disk_no];*/
-    /*MboxCondSend(mbox_id, (void *) &status, sizeof(int));*/
-
-}
-
-int kern_disk_size(int unit, int *sector, int *track, int *disk) {
-
-    // check for kernel mode
-    require_kernel_mode(__func__);
-
-    // gain mutex
-    gain_mutex(__func__);
-
-    // release mutex
-    release_mutex(__func__);
-}
-
-int kern_disk_read(void *buffer, int unit, int track, int firstBlock, int blocks, int *statusOut) {
-    // check for kernel mode
-    require_kernel_mode(__func__);
-
-    // gain mutex
-    gain_mutex(__func__);
+    // repack return values
+    int status, success;
+    arg->arg1 = (void *)(long)            status;
+    arg->arg4 = (void *)(long)(success ? 0 : -1);
 
     // release mutex
     release_mutex(__func__);
 
 }
 
-int kern_disk_write(void *buffer, int unit, int track, int firstBlock, int blocks, int *statusOut) {
+void kern_disk_write(USLOSS_Sysargs *arg) {
     // check for kernel mode
-    require_kernel_mode(__func__);
+    CHECKMODE;
 
     // gain mutex
     gain_mutex(__func__);
+
+    // unpack arguments
+    void *diskBuffer =            arg->arg1;
+    int   sectors    = (int)(long)arg->arg2;
+    int   track      = (int)(long)arg->arg3;
+    int   first      = (int)(long)arg->arg4;
+    int   unit       = (int)(long)arg->arg5;
+
+    // repack return values
+    int status, success;
+    arg->arg1 = (void *)(long)            status;
+    arg->arg4 = (void *)(long)(success ? 0 : -1);
 
     // release mutex
     release_mutex(__func__);
 
 }
 
+void kern_disk_size(USLOSS_Sysargs *arg) {
+    // check for kernel mode
+    CHECKMODE;
 
+    // gain mutex
+    gain_mutex(__func__);
 
+    // unpack arguments
+    int unit = (int)(long)arg->arg1;
 
+    // repack return values
+    int sector, track, disk, success;
+    arg->arg1 = (void *)(long)sector;
+    arg->arg2 = (void *)(long)track;
+    arg->arg3 = (void *)(long)disk;
+    arg->arg4 = (void *)(long)(success ? 0 : -1);
 
-
+    // release mutex
+    release_mutex(__func__);
+}

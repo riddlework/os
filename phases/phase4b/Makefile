@@ -1,4 +1,4 @@
-PREFIX = /root
+PREFIX = ../..
 
 CC = gcc
 

@@ -1,0 +1,35 @@
+devices are read using USLOSS_DeviceInput
+devices are written using USLOSS_DeviceOutput
+
+CLOCK
+Have to implement the Sleep() system call.
+-- only one process should call waitDevice
+-- have a process in an infinite loop (daemon process?)
+-- process increments counter each time another interrupt received
+-- use mailboxes to wake up sleeping processes, when their wakeup time arrives
+Clock interrupt occurs about every 100ms => 1sec = 10 interrupts
+
+
+TERM DEVICE
+1. there are four terminal devices that run in parallel
+2. each can read and write one character simultaneously
+
+16-bit CONTROL register:
+-- used by the cpu to send commands to the device
+    -- accessed via USLOSS_DeviceInput (READS FROM STATUS REGISTER)
+    -- an interrupt is generated each time there is a change in the status register
+
+16-bit STATUS register:
+-- used by the device to send information back to the operating system
+    -- accessed via USLOSS_DeviceOutput (WRITES TO CONTROL REGISTER)
+
+USLOSS_DeviceInput READS from the STATUS register.
+USLOSS_DeviceOutput WRITES to the CONTROL register.
+It is IMPOSSIBLE to WRITE to the STATUS register.
+It is IMPOSSIBLE to READ to the CONTROL register.
+
+should set recv int enable bit for all terminals and leave them on
+set exmit int enable bit only when there are chars to transmit on terminal
+
+make sure to keep xmit/recv interrupts on when xmit/recv-ing chars
+
