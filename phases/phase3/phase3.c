@@ -40,11 +40,9 @@ typedef struct pcb {
 
 typedef struct semaphore {
     /*int sem_id;*/
-    int mbox;
-    int mbox_num_slots;
     int is_alive;
     int value;
-    /*pcb *blocked_queue;*/
+    pcb *blocked_queue;
 } Semaphore;
 
 // globals
@@ -290,11 +288,8 @@ int kernSemCreate(int value, int *semaphore) {
 
     Semaphore *sem = &sems[sem_id];
     /*sem->sem_id = sem_id;*/
-    sem->mbox = MboxCreate(0, 0);
-    sem->mbox_num_slots = value;
-    sem->is_alive = 1;
     sem->value = value;
-    /*USLOSS_Console("semaphore created with mbox %d and value %d\n", sem->mbox, sem->value);*/
+    sem->is_alive = 1;
 
     // pack return values
     *semaphore = sem_id;
@@ -349,57 +344,34 @@ int kernSemP(int semaphore) {
     // gain a reference to the semaphore
     Semaphore *sem = &sems[semaphore];
 
-
-    /*if (sem->value <= sem->mbox_num_slots) {*/
     if (sem->value == 0) {
-        // release the mutex before sending``
+        // add self to sem's blocked queue and block
+        int pid = getpid();
+        pcb *to_queue = &shadow_proc_table[pid % MAXPROC];
+        to_queue->pid = pid;
+
+        pcb *cur = sem->blocked_queue;
+        if (!cur) {
+            sem->blocked_queue = to_queue;
+        } else {
+            while (cur->next) cur = cur->next;
+            cur->next = to_queue;
+        }
+
+        // release the mutex before blocking
         release_mutex(__func__);
 
-        USLOSS_Console("MboxSend is about to send to mbox %d\n", sem->mbox);
-        sleep(1);
-        int send = MboxSend(sem->mbox, NULL, 0);
-        USLOSS_Console("send to mbox %d returned: %d\n", sem->mbox, send);
+        blockMe();
 
-        /*int recv = MboxCondRecv(sem->mbox, NULL, 0);*/
-        /*USLOSS_Console("recv %d\n", recv);*/
-
+        // gain back mutex
         gain_mutex(__func__);
-        
     }
-    USLOSS_Console("sem->value after possible mbox send: %d\n", sem->value);
 
+    // P (on the pizza)
     sem->value--;
-    // release the mutex before sending
-    release_mutex(__func__);
 
-    /*if (sem->value == 0) {*/
-    /*    // add self to sem's blocked queue and block*/
-    /*    int pid = getpid();*/
-    /*    pcb *to_queue = &shadow_proc_table[pid % MAXPROC];*/
-    /*    to_queue->pid = pid;*/
-    /**/
-    /*    pcb *cur = sem->blocked_queue;*/
-    /*    if (!cur) {*/
-    /*        sem->blocked_queue = to_queue;*/
-    /*    } else {*/
-    /*        while (cur->next) cur = cur->next;*/
-    /*        cur->next = to_queue;*/
-    /*    }*/
-    /**/
-    /*    // release the mutex before blocking*/
-    /*    release_mutex(__func__);*/
-    /**/
-    /*    blockMe();*/
-    /**/
-    /*    // gain back mutex*/
-    /*    gain_mutex(__func__);*/
-    /*}*/
-    /**/
-    /*// P (on the pizza)*/
-    /*sem->value--;*/
-    /**/
-    /*// release mutex*/
-    /*release_mutex(__func__);*/
+    // release mutex
+    release_mutex(__func__);
 
     return 0;
 }
@@ -453,24 +425,14 @@ int kernSemV(int semaphore) {
     // release mutex
     release_mutex(__func__);
 
-    // wake a blocked process if there is one
-    int recv = MboxCondRecv(sem->mbox, NULL, 0);
-    USLOSS_Console("MboxCondRecv returned %d\n", recv);
-    /*if (sem->value >= sem->mbox_num_slots) {*/
-    /*    USLOSS_Console("about to recv from mbox %d\n", sem->mbox);*/
-    /*    int recv = MboxRecv(sem->mbox, NULL, 0);*/
-    /*}*/
+    sem->value++;
 
-
-    /*sem->value++;*/
-    /**/
-    /*// unblock a proc that's blocked on the semaphore if one exists*/
-    /*if (sem->blocked_queue) {*/
-    /*    int pid_toUnblock = sem->blocked_queue->pid;*/
-    /*    sem->blocked_queue = sem->blocked_queue->next;*/
-    /*    unblockProc(pid_toUnblock);*/
-    /*}*/
-
+    // unblock a proc that's blocked on the semaphore if one exists
+    if (sem->blocked_queue) {
+        int pid_toUnblock = sem->blocked_queue->pid;
+        sem->blocked_queue = sem->blocked_queue->next;
+        unblockProc(pid_toUnblock);
+    }
 
     return 0;
 }
