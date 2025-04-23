@@ -44,15 +44,15 @@ typedef struct pcb {
     int is_alive;
     int wakeup_cycle;
     int mbox;
+    struct pcb *next;
 } pcb;
 
 // globals
 int mutex;
-int sleep_mbox;
-
+pcb *sleep_head;
 int num_cycles_since_start;
 
-static pcb shadow_proc_table[MAXPROC];
+static pcb sleep_queue[MAXPROC];
 
 void gain_mutex(const char *func) {
     /*USLOSS_Console("%s IS TRYING TO GAIN THE MUTEX!\n", func);*/
@@ -80,7 +80,7 @@ void phase4_init() {
     gain_mutex(__func__);
     
     // zero out the shadow process table
-    for (int i = 0; i < MAXPROC; i++) memset(&shadow_proc_table[i], 0, sizeof(pcb));
+    for (int i = 0; i < MAXPROC; i++) memset(&sleep_queue[i], 0, sizeof(pcb));
     
     // load the system call vec
     systemCallVec[SYS_SLEEP]     =      kern_sleep;
@@ -90,8 +90,6 @@ void phase4_init() {
     systemCallVec[SYS_DISKWRITE] = kern_disk_write; 
     systemCallVec[SYS_DISKSIZE]  =  kern_disk_size; 
 
-    // create sleep mbox
-    /*sleep_mbox = MboxCreate()*/
 
 
     // TODO:
@@ -106,11 +104,8 @@ void phase4_init() {
 }
 
 void phase4_start_service_processes() {
-    // need to start four daemons here?
-    // start sleep daemon here
-    int pid = spork("sleepd", sleepd, NULL, USLOSS_MIN_STACK, 5);
-    USLOSS_Console("phase4_start_service_processes(): Spork %d\n", pid);
-
+    // spork the sleep daemon
+    int pid = spork("sleepd", sleepd, NULL, USLOSS_MIN_STACK, 3);
 }
 
 int sleepd(void *arg) {
@@ -118,28 +113,54 @@ int sleepd(void *arg) {
     // waitDevice give syou the current status (time)
     // every 10 interrupts is one second
 
+    gain_mutex(__func__);
     while (1) {
         int status;
         waitDevice(USLOSS_CLOCK_INT, 0, &status);
-        /*USLOSS_Console("WAIT DEVICE FILLED STATUS WITH: %d\n", status);*/
         num_cycles_since_start++;
-        USLOSS_Console("time of day before for loop = %d\n", currentTime());
-        USLOSS_Console("num_cycles_since_start before for loop = %d\n", num_cycles_since_start);
-        for (int i = 0; i < MAXPROC; i++) {
-            pcb *proc = &shadow_proc_table[i];
-            if (proc->is_alive) {
-                /*USLOSS_Console("wakeup_cycle %d\n", proc->wakeup_cycle);*/
-                if (num_cycles_since_start >= proc->wakeup_cycle) {
-                    MboxRecv(proc->mbox, NULL, 0);
-                }
 
-            }
+        while (sleep_head && num_cycles_since_start >= sleep_head->wakeup_cycle) {
+            int pid_toUnblock = sleep_head->pid;
+            sleep_head = sleep_head->next;
 
+            release_mutex(__func__);
+
+            unblockProc(pid_toUnblock);
+
+            gain_mutex(__func__);
         }
-        USLOSS_Console("time of day after for loop = %d\n", currentTime());
 
+        release_mutex(__func__);
+    }
+}
+
+/* insert a process into the sleep queue */
+void put(pcb *proc) {
+
+    // retrieve the cycle number at which the process should wakeup
+    int wakeup_cycle = proc->wakeup_cycle;
+
+
+    // iterate to the place in the queue at which the process should be inserted
+    pcb *prev = NULL;
+    pcb *cur = sleep_head;
+    while (cur) {
+        int cur_wakeup_cycle = cur->wakeup_cycle;
+        if (wakeup_cycle < cur_wakeup_cycle) break;
+
+        prev = cur;
+        cur = cur->next;
     }
 
+    // insert the process
+    if (prev) {
+        pcb *temp = prev->next;
+        prev->next = proc;
+        proc->next = temp;
+    } else {
+        proc->next = cur;
+        sleep_head = proc;
+    }
 }
 
 // pause the current process for the specified number of seconds
@@ -161,29 +182,25 @@ void kern_sleep(USLOSS_Sysargs *arg) {
     }
 
 
+    // put the process into the sleep queue before sleeping
     int pid = getpid();
-    /*USLOSS_Console("Process %d wants to sleep for %d seconds.\n", pid, secs);*/
-    pcb *cur_proc = &shadow_proc_table[pid % MAXPROC];
+    pcb *cur_proc = &sleep_queue[pid % MAXPROC];
     cur_proc->pid = pid;
-    cur_proc->is_alive = 1;
     cur_proc->wakeup_cycle = num_cycles_since_start + clock_cycles_to_wait;
-    cur_proc->mbox = MboxCreate(0,0);
-
-    USLOSS_Console("Process %d: We are at CC# %d, so to sleep for %d seconds, we need to sleep for %d CCs and wake up at CC# %d\n", pid, num_cycles_since_start, secs, clock_cycles_to_wait, cur_proc->wakeup_cycle);
-    
+    put(cur_proc);
 
     // release mutex before blocking
     release_mutex(__func__);
 
     // block
-    MboxSend(cur_proc->mbox, NULL, 0);
+    blockMe();
 
-    // regain mutex
+    // regain mutex after blocking
     gain_mutex(__func__);
 
     // release the mailbox and zero out the slot
-    MboxRelease(cur_proc->mbox);
-    memset(&shadow_proc_table[pid % MAXPROC], 1, sizeof(pcb));
+    /*MboxRelease(cur_proc->mbox);*/
+    memset(&sleep_queue[pid % MAXPROC], 1, sizeof(pcb));
 
     // repack return values
     arg->arg4 = (void *)(long)0;
