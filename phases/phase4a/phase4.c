@@ -50,7 +50,7 @@ void gain_mutex(const char *func);
 void release_mutex(const char *func);
 void phase4_start_service_processes();
 void put_into_sleep_queue(pcb *proc);
-void put_into_term_queue(rw_req *req, rw_req *queue);
+void put_into_term_queue(rw_req *req, rw_req **queue);
 
 // system calls
 void kern_sleep     (USLOSS_Sysargs *arg);
@@ -123,10 +123,13 @@ void phase4_init() {
 
     // enable terminal recv interrupts
     int cr_val = 0x2; // make sure to turn off send char
-    int err = USLOSS_DeviceOutput(USLOSS_TERM_DEV, 0, (void *)(long)cr_val);
-    if (err == USLOSS_DEV_INVALID) {
-        USLOSS_Console("ERROR: Failed to turn on read interrupts!\n");
-        USLOSS_Halt(1);
+    for (int i = 0; i < 4; i++) {
+        int err = USLOSS_DeviceOutput(USLOSS_TERM_DEV, i, (void *)(long)cr_val);
+        if (err == USLOSS_DEV_INVALID) {
+            USLOSS_Console("ERROR: Failed to turn on read interrupts!\n");
+            USLOSS_Halt(1);
+        }
+
     }
 
     // read the disk sizes here and save them as global varaibles
@@ -138,13 +141,10 @@ void phase4_init() {
 
 void phase4_start_service_processes() {
     // spork the sleep daemon
-    spork("sleepd", sleepd, NULL, USLOSS_MIN_STACK, 3);
+    spork("sleepd", sleepd, NULL, USLOSS_MIN_STACK, 5);
 
     // spork the four terminal daemons - one for each terminal
-    spork("termd0", termd, (void *)(long)0, USLOSS_MIN_STACK, 3);
-    spork("termd1", termd, (void *)(long)1, USLOSS_MIN_STACK, 3);
-    spork("termd2", termd, (void *)(long)2, USLOSS_MIN_STACK, 3);
-    spork("termd3", termd, (void *)(long)3, USLOSS_MIN_STACK, 3);
+    for (int i = 0; i < 4; i++) spork("termd", termd, (void *)(long)i, USLOSS_MIN_STACK, 5);
 }
 
 /* DAEMONS */
@@ -174,19 +174,16 @@ int sleepd(void *arg) {
 
 /* terminal daemon */
 int termd(void *arg) {
-    // gain mutex here somewhere?
 
     int       unit = (int)(long)arg;
     Terminal *term =   &terms[unit];
     int    buf_idx =              0;
+
     // term write writes to the control register
     while (1) {
         // wait for a terminal interrupt to occur -- retrieve its status
         int status;
-        USLOSS_Console("unit %d\n", unit);
-        dumpProcesses();
         waitDevice(USLOSS_TERM_DEV, unit, &status);
-        gain_mutex(__func__);
 
         // unpack the different parts of the status
         char         ch = USLOSS_TERM_STAT_CHAR(status); // char recvd, if any
@@ -194,7 +191,6 @@ int termd(void *arg) {
         int recv_status = USLOSS_TERM_STAT_RECV(status);
 
 
-        USLOSS_Console("CHAR: %c\n", ch);
         // read from the terminal
         if (recv_status == USLOSS_DEV_BUSY) {
             // a character has been received in the status register
@@ -208,20 +204,23 @@ int termd(void *arg) {
 
                 // conditionally send the buffer to the terminal mailbox
                 // +1 for null terminator
+                gain_mutex(__func__);
                 MboxCondSend(term->mbox, term->buf, strlen(term->buf)+1);
+                release_mutex(__func__);
 
                 // zero out buffer
                 explicit_bzero(term->buf, MAXLINE+1);
 
                 // if there is a process on the read queue, deliver to it
                 if (term->read_queue) {
+                    gain_mutex(__func__);
                     // dequeue the request process
                     rw_req *req = term->read_queue;
                     term->read_queue = term->read_queue->next;
 
                     // TODO: use blocking recv?
                     // deliver the terminal line
-                    MboxCondRecv(term->mbox, req->buf, req->bufSize);
+                    MboxRecv(term->mbox, req->buf, req->bufSize);
 
                     // write the size of the line written
                     *(req->lenOut) = strlen(req->buf);
@@ -230,11 +229,9 @@ int termd(void *arg) {
                     // unblock the process
                     unblockProc(req->pid);
 
-                    gain_mutex(__func__);
                 }
 
             }
-            release_mutex(__func__);
         }
 
         if (xmit_status == USLOSS_DEV_READY) {
@@ -247,7 +244,6 @@ int termd(void *arg) {
             USLOSS_Console("ERROR: After retrieving terminal status, the receive status is USLOSS_DEV_ERROR!\n");
             USLOSS_Halt(1);
         }
-        /*int unit = MboxRecv()*/
 
         // turn on xmit interrupts here somewhere?
 
@@ -327,12 +323,10 @@ void kern_term_read(USLOSS_Sysargs *arg) {
     };
 
     // retrieve a reference to the appropriate terminal
-    Terminal *term = &terms[unit-1];
-
-    /*USLOSS_Console("%d\n", unit);*/
+    Terminal *term = &terms[unit];
 
     // add the request to the queue
-    put_into_term_queue(&req, term->read_queue);
+    put_into_term_queue(&req, &term->read_queue);
 
     // block while waiting for request to be fulfilled
     release_mutex(__func__);
@@ -370,10 +364,10 @@ void kern_term_write(USLOSS_Sysargs *arg) {
     };
 
     // retrieve a reference to the appropriate terminal
-    Terminal *term = &terms[unit-1];
+    Terminal *term = &terms[unit];
 
     // add the request to the queue
-    put_into_term_queue(&req, term->read_queue);
+    /*put_into_term_queue(&req, term->read_queue);*/
 
     // TODO: grab term write semaphore in here somewhere?
 
@@ -486,17 +480,18 @@ void put_into_sleep_queue(pcb *proc) {
     }
 }
 
-void put_into_term_queue(rw_req *req, rw_req *queue) {
+void put_into_term_queue(rw_req *req, rw_req **queue) {
     // add the request to the back of the queue
     rw_req *prev = NULL;
-    rw_req *cur = queue;
+    rw_req *cur = *queue;
     while (cur) {
+        USLOSS_Console("iterating through queue\n");
         prev = cur;
         cur = cur->next;
     }
 
     if (!prev) {
-        queue = req;
+        *queue = req;
     } else {
         cur->next = req;
     }
