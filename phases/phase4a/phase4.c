@@ -13,7 +13,6 @@
 #define CHECKMODE { \
     if (!(USLOSS_PsrGet() & USLOSS_PSR_CURRENT_MODE)) { \
         USLOSS_Console("ERROR: Someone attempted to call a function while in user mode!\n"); \
-        USLOSS_Halt(1);  \
     } \
 }
 
@@ -29,11 +28,21 @@ typedef struct pcb {
     struct pcb *next;
 } pcb;
 
-typedef struct arg_package {
-    char *buf;
-    int bufSize;
-    int unit;
-} arg_package;
+typedef struct rw_req {
+           int      pid;
+           char    *buf;
+           int  bufSize;
+           int  *lenOut;
+    struct rw_req *next;
+} rw_req;
+
+typedef struct term {
+    char buf[MAXLINE+1];
+    int mbox;
+    int write_sem;
+    rw_req *read_queue;
+    rw_req *write_queue;
+} Terminal;
 
 
 /* FUNCTION STUBS */
@@ -41,6 +50,7 @@ void gain_mutex(const char *func);
 void release_mutex(const char *func);
 void phase4_start_service_processes();
 void put_into_sleep_queue(pcb *proc);
+void put_into_term_queue(rw_req *req, rw_req *queue);
 
 // system calls
 void kern_sleep     (USLOSS_Sysargs *arg);
@@ -56,10 +66,10 @@ int termd(void *arg);
 
 // globals
 int mutex;
-pcb *sleep_head;
+pcb *sleep_queue;
 int num_cycles_since_start;
+Terminal terms[4];
 
-static pcb sleep_queue[MAXPROC];
 
 void gain_mutex(const char *func) {
     /*USLOSS_Console("%s IS TRYING TO GAIN THE MUTEX!\n", func);*/
@@ -80,14 +90,11 @@ void phase4_init() {
     CHECKMODE;
 
     // initialize the mutex using a semaphore
-    int fail = kernSemCreate(1, &mutex);﻿
-    if (fail) USLOSS_Console("ERROR: Failed to create semaphore!\n");
+    int fail = kernSemCreate(1, &mutex);
+    if (fail) USLOSS_Console("ERROR: Failed to create mutex semaphore!\n");
 
     // gain the mutex
     gain_mutex(__func__);
-    
-    // zero out the shadow process table
-    for (int i = 0; i < MAXPROC; i++) memset(&sleep_queue[i], 0, sizeof(pcb));
     
     // load the system call vec
     systemCallVec[SYS_SLEEP]     =      kern_sleep;
@@ -97,10 +104,35 @@ void phase4_init() {
     systemCallVec[SYS_DISKWRITE] = kern_disk_write; 
     systemCallVec[SYS_DISKSIZE]  =  kern_disk_size; 
 
+    // initialize terminals
+    for (int i = 0; i < 4; i++) {
+        Terminal *term = &terms[i];
 
-    // TODO:
-    // definitely turn on the terminal read (recv) interrupt here
-    // maybe turn on the terminal write (xmit) interrupt here -- or only when process is writing?
+        memset(term, 0, sizeof(Terminal));
+
+        // zero out buffer
+        explicit_bzero(term->buf, MAXLINE+1);
+
+        // initialize mailbox
+        term->mbox = MboxCreate(10, MAXLINE+1);
+
+        // initialize write semaphore
+        int fail = term->write_sem = kernSemCreate(1, &term->write_sem);
+        if (fail) USLOSS_Console("ERROR: Failed to create %d term_write semaphore!\n", i);
+    }
+
+    /*USLOSS_PsrSet(USLOSS_PsrGet() | 0x2);*/
+    /*USLOSS_Console("PSR: %08b\n", USLOSS_PsrGet());*/
+
+    // enable terminal recv interrupts
+    int cr_val = 0x2; // make sure to turn off send char
+    /*int cr_val = 0xFFFF; // make sure to turn off send char*/
+    USLOSS_Console("%016b\n", cr_val);
+    int err = USLOSS_DeviceOutput(USLOSS_TERM_DEV, 0, NULL);
+    if (err == USLOSS_DEV_INVALID) {
+        USLOSS_Console("ERROR: Failed to turn on read interrupts!\n");
+        USLOSS_Halt(1);
+    }
 
     // read the disk sizes here and save them as global varaibles
     // queuing and sequencing disk requests
@@ -112,7 +144,12 @@ void phase4_init() {
 void phase4_start_service_processes() {
     // spork the sleep daemon
     spork("sleepd", sleepd, NULL, USLOSS_MIN_STACK, 3);
-    spork("termd", termd, NULL, USLOSS_MIN_STACK, 3);
+
+    // spork the four terminal daemons - one for each terminal
+    spork("termd0", termd, (void *)(long)0, USLOSS_MIN_STACK, 3);
+    spork("termd1", termd, (void *)(long)1, USLOSS_MIN_STACK, 3);
+    spork("termd2", termd, (void *)(long)2, USLOSS_MIN_STACK, 3);
+    spork("termd3", termd, (void *)(long)3, USLOSS_MIN_STACK, 3);
 }
 
 /* DAEMONS */
@@ -123,16 +160,16 @@ int sleepd(void *arg) {
     while (1) {
         // call wait device to wait for a clock interrupt
         int status;
-        waitDevice(USLOSS_CLOCK_INT, 0, &status);
+        waitDevice(USLOSS_CLOCK_DEV, 0, &status);
         num_cycles_since_start++;
 
         // wakeup any cycles whose wakeup time has arrived/passed
-        while (sleep_head && num_cycles_since_start >= sleep_head->wakeup_cycle) {
+        while (sleep_queue && num_cycles_since_start >= sleep_queue->wakeup_cycle) {
             
             // gain mutex here since the sleep queue is a shared 
             gain_mutex(__func__);
-            int pid_toUnblock = sleep_head->pid;
-            sleep_head = sleep_head->next;
+            int pid_toUnblock = sleep_queue->pid;
+            sleep_queue = sleep_queue->next;
             release_mutex(__func__);
 
             unblockProc(pid_toUnblock);
@@ -142,14 +179,76 @@ int sleepd(void *arg) {
 
 /* terminal daemon */
 int termd(void *arg) {
+    // gain mutex here somewhere?
 
-    // waitDevice waits for a terminal interrupt (recv or xmit??)
-    // and reads the status register
-    // we want to write to the control register
+    int       unit = (int)(long)arg;
+    Terminal *term =   &terms[unit];
+    int    buf_idx =              0;
+    // term write writes to the control register
     while (1) {
+        // wait for a terminal interrupt to occur -- retrieve its status
         int status;
-        int unit = MboxRecv()
-        waitDevice(USLOSS_TERMI_INT, )
+        dumpProcesses();
+        waitDevice(USLOSS_TERM_DEV, unit, &status);
+
+        // unpack the different parts of the status
+        char         ch = USLOSS_TERM_STAT_CHAR(status); // char recvd, if any
+        int xmit_status = USLOSS_TERM_STAT_XMIT(status);
+        int recv_status = USLOSS_TERM_STAT_RECV(status);
+
+
+        USLOSS_Console("CHAR: %c\n", ch);
+        // read from the terminal
+        if (recv_status == USLOSS_DEV_BUSY) {
+            // a character has been received in the status register
+
+            // buffer the character
+            term->buf[buf_idx++] = ch;
+
+            if (buf_idx == MAXLINE || ch == '\n') {
+                // reset buf index
+                buf_idx = 0;
+
+                // conditionally send the buffer to the terminal mailbox
+                // +1 for null terminator
+                MboxCondSend(term->mbox, term->buf, strlen(term->buf)+1);
+
+                // zero out buffer
+                explicit_bzero(term->buf, MAXLINE+1);
+
+                // if there is a process on the read queue, deliver to it
+                if (term->read_queue) {
+                    // dequeue the request process
+                    rw_req *req = term->read_queue;
+                    term->read_queue = term->read_queue->next;
+
+                    // TODO: use blocking recv?
+                    // deliver the terminal line
+                    MboxCondRecv(term->mbox, req->buf, req->bufSize);
+
+                    // write the size of the line written
+                    *(req->lenOut) = strlen(req->buf);
+
+                    // unblock the process
+                    unblockProc(req->pid);
+                }
+
+            }
+        } else if (xmit_status == USLOSS_DEV_READY) {
+            // ready to write a character out
+
+        } else if (recv_status == USLOSS_DEV_ERROR) {
+            // an error has occurred
+            USLOSS_Console("ERROR: After retrieving terminal status, the receive status is USLOSS_DEV_ERROR!\n");
+            USLOSS_Halt(1);
+        }
+        /*int unit = MboxRecv()*/
+
+        // turn on xmit interrupts here somewhere?
+
+
+        // use macros to put together a control word to write to the control
+        // register via USLOSS_DeviceOutput
 
     }
 
@@ -160,9 +259,6 @@ int termd(void *arg) {
 void kern_sleep(USLOSS_Sysargs *arg) {
     // check for kernel mode
     CHECKMODE;
-
-    // gain mutex
-    gain_mutex(__func__);
 
     // unpack arguments
     int secs = (int)(long)arg->arg1;
@@ -175,11 +271,16 @@ void kern_sleep(USLOSS_Sysargs *arg) {
     }
 
     // put the process into the sleep queue before sleeping
-    int pid = getpid();
-    pcb *cur_proc = &sleep_queue[pid % MAXPROC];
-    cur_proc->pid = pid;
-    cur_proc->wakeup_cycle = num_cycles_since_start + clock_cycles_to_wait;
-    put_into_sleep_queue(cur_proc);
+    pcb cur_proc = {
+        .pid = getpid(),
+        .wakeup_cycle = num_cycles_since_start + clock_cycles_to_wait,
+        .next = NULL
+    };
+
+    // gain mutex before accessing shared variable
+    gain_mutex(__func__);
+
+    put_into_sleep_queue(&cur_proc);
 
     // release mutex before blocking
     release_mutex(__func__);
@@ -189,9 +290,6 @@ void kern_sleep(USLOSS_Sysargs *arg) {
 
     // regain mutex after blocking
     gain_mutex(__func__);
-
-    // zero out the slot so it can be reused
-    memset(&sleep_queue[pid % MAXPROC], 1, sizeof(pcb));
 
     // repack success return value
     arg->arg4 = (void *)(long)0;
@@ -203,6 +301,7 @@ void kern_sleep(USLOSS_Sysargs *arg) {
 void kern_term_read(USLOSS_Sysargs *arg) {
     // check for kernel mode
     CHECKMODE;
+    dumpProcesses();
 
     // gain mutex
     gain_mutex(__func__);
@@ -211,24 +310,30 @@ void kern_term_read(USLOSS_Sysargs *arg) {
     char *buf     =    (char *)arg->arg1;
     int   bufSize = (int)(long)arg->arg2;
     int   unit    = (int)(long)arg->arg3;
+    int   lenOut  =                   -1;
 
-    arg_package args = {
-        .buf     =     buf,
-        .bufSize = bufSize,
-        .unit    =    unit
+    // pack the arguments into an easily-sendable form
+    rw_req req = {
+        .pid     = getpid(),
+        .buf     =      buf,
+        .bufSize =  bufSize,
+        .lenOut  =  &lenOut, // termd will write this val
+        .next    =  NULL
     };
 
-    // send the arguments to the term daemon
-    // TODO: Change the mbox number here
-    MboxSend(0, &args, sizeof(arg_package));
+    // retrieve a reference to the appropriate terminal
+    Terminal *term = &terms[unit-1];
 
+    // add the request to the queue
+    put_into_term_queue(&req, term->read_queue);
 
-    // recv the length back from the term daemon
-    // TODO: change the mbox number here
-    int lenOut;
-    MboxRecv(0, &lenOut, sizeof(int));
+    // block while waiting for request to be fulfilled
+    release_mutex(__func__);
+    blockMe();
+    gain_mutex(__func__);
 
     // repack return values
+    if (lenOut == -1) USLOSS_Console("ERROR: It seems termd has not written to lenOut!\n");
     arg->arg4 = (void *)(long)lenOut;
 
     // release mutex
@@ -246,23 +351,28 @@ void kern_term_write(USLOSS_Sysargs *arg) {
     char *buf     =    (char *)arg->arg1;
     int   bufSize = (int)(long)arg->arg2;
     int   unit    = (int)(long)arg->arg3;
+    int   lenOut  =                   -1;
 
-    arg_package args = {
-        .buf     =     buf,
-        .bufSize = bufSize,
-        .unit    =    unit
+    // pack the arguments into an easily-sendable form
+    rw_req req = {
+        .pid     = getpid(),
+        .buf     =      buf,
+        .bufSize =  bufSize,
+        .lenOut  =  &lenOut, // termd will write this val
+        .next    =  NULL
     };
 
-    // send the arguments to the term daemon
-    // TODO: Change the mbox number here
-    MboxSend(0, &args, sizeof(arg_package));
+    // retrieve a reference to the appropriate terminal
+    Terminal *term = &terms[unit-1];
 
-    // recv the length back from the term daemon
-    // TODO: change the mbox number here
-    int lenOut;
-    MboxRecv(0, &lenOut, sizeof(int));
+    // add the request to the queue
+    put_into_term_queue(&req, term->read_queue);
+
+    // TODO: grab term write semaphore in here somewhere?
+
 
     // repack return value
+    if (lenOut == -1) USLOSS_Console("ERROR: It seems termd has not written to lenOut!\n");
     arg->arg4 = (void *)(long)lenOut;
 
     // release mutex
@@ -349,10 +459,10 @@ void put_into_sleep_queue(pcb *proc) {
 
     // iterate to the place in the queue at which the process should be inserted
     pcb *prev = NULL;
-    pcb *cur = sleep_head;
+    pcb *cur = sleep_queue;
     while (cur) {
         int cur_wakeup_cycle = cur->wakeup_cycle;
-        if (wakeup_cycle < cur_wakeup_cycle) break;
+        if (wakeup_cycle <= cur_wakeup_cycle) break;
 
         prev = cur;
         cur = cur->next;
@@ -365,6 +475,22 @@ void put_into_sleep_queue(pcb *proc) {
         proc->next = temp;
     } else {
         proc->next = cur;
-        sleep_head = proc;
+        sleep_queue = proc;
+    }
+}
+
+void put_into_term_queue(rw_req *req, rw_req *queue) {
+    // add the request to the back of the queue
+    rw_req *prev = NULL;
+    rw_req *cur = queue;
+    while (cur) {
+        prev = cur;
+        cur = cur->next;
+    }
+
+    if (!prev) {
+        queue = req;
+    } else {
+        cur->next = req;
     }
 }
