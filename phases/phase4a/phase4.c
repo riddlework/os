@@ -121,14 +121,9 @@ void phase4_init() {
         if (fail) USLOSS_Console("ERROR: Failed to create %d term_write semaphore!\n", i);
     }
 
-    /*USLOSS_PsrSet(USLOSS_PsrGet() | 0x2);*/
-    /*USLOSS_Console("PSR: %08b\n", USLOSS_PsrGet());*/
-
     // enable terminal recv interrupts
     int cr_val = 0x2; // make sure to turn off send char
-    /*int cr_val = 0xFFFF; // make sure to turn off send char*/
-    USLOSS_Console("%016b\n", cr_val);
-    int err = USLOSS_DeviceOutput(USLOSS_TERM_DEV, 0, NULL);
+    int err = USLOSS_DeviceOutput(USLOSS_TERM_DEV, 0, (void *)(long)cr_val);
     if (err == USLOSS_DEV_INVALID) {
         USLOSS_Console("ERROR: Failed to turn on read interrupts!\n");
         USLOSS_Halt(1);
@@ -188,8 +183,10 @@ int termd(void *arg) {
     while (1) {
         // wait for a terminal interrupt to occur -- retrieve its status
         int status;
+        USLOSS_Console("unit %d\n", unit);
         dumpProcesses();
         waitDevice(USLOSS_TERM_DEV, unit, &status);
+        gain_mutex(__func__);
 
         // unpack the different parts of the status
         char         ch = USLOSS_TERM_STAT_CHAR(status); // char recvd, if any
@@ -229,15 +226,23 @@ int termd(void *arg) {
                     // write the size of the line written
                     *(req->lenOut) = strlen(req->buf);
 
+                    release_mutex(__func__);
                     // unblock the process
                     unblockProc(req->pid);
+
+                    gain_mutex(__func__);
                 }
 
             }
-        } else if (xmit_status == USLOSS_DEV_READY) {
+            release_mutex(__func__);
+        }
+
+        if (xmit_status == USLOSS_DEV_READY) {
             // ready to write a character out
 
-        } else if (recv_status == USLOSS_DEV_ERROR) {
+        } 
+
+        if (recv_status == USLOSS_DEV_ERROR) {
             // an error has occurred
             USLOSS_Console("ERROR: After retrieving terminal status, the receive status is USLOSS_DEV_ERROR!\n");
             USLOSS_Halt(1);
@@ -301,7 +306,7 @@ void kern_sleep(USLOSS_Sysargs *arg) {
 void kern_term_read(USLOSS_Sysargs *arg) {
     // check for kernel mode
     CHECKMODE;
-    dumpProcesses();
+    /*dumpProcesses();*/
 
     // gain mutex
     gain_mutex(__func__);
@@ -323,6 +328,8 @@ void kern_term_read(USLOSS_Sysargs *arg) {
 
     // retrieve a reference to the appropriate terminal
     Terminal *term = &terms[unit-1];
+
+    /*USLOSS_Console("%d\n", unit);*/
 
     // add the request to the queue
     put_into_term_queue(&req, term->read_queue);
