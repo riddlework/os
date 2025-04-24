@@ -32,6 +32,7 @@ typedef struct rw_req {
            int      pid;
            char    *buf;
            int  bufSize;
+           int cur_buf_idx;
            int  *lenOut;
     struct rw_req *next;
 } rw_req;
@@ -213,29 +214,74 @@ int termd(void *arg) {
 
                 // if there is a process on the read queue, deliver to it
                 if (term->read_queue) {
+
+                    // gain the mutex
                     gain_mutex(__func__);
+
                     // dequeue the request process
                     rw_req *req = term->read_queue;
                     term->read_queue = term->read_queue->next;
 
                     // TODO: use blocking recv?
                     // deliver the terminal line
-                    MboxRecv(term->mbox, req->buf, req->bufSize);
+
+                    // receive into current working buffer
+                    MboxRecv(term->mbox, term->buf, MAXLINE);
+                    // copy over bufSize chars
+                    strncpy(req->buf, term->buf, req->bufSize);
 
                     // write the size of the line written
                     *(req->lenOut) = strlen(req->buf);
 
+                    // zero out the buffer again
+                    explicit_bzero(term->buf, MAXLINE+1);
+
+                    // release the mutex before unblocking the process
                     release_mutex(__func__);
+
                     // unblock the process
                     unblockProc(req->pid);
-
                 }
-
             }
         }
 
         if (xmit_status == USLOSS_DEV_READY) {
             // ready to write a character out
+
+            rw_req *req = term->write_queue;
+
+            if (req->cur_buf_idx < req->bufSize) {
+                // read the next character from the buffer
+
+                char ch_to_write = term->buf[req->cur_buf_idx++];
+
+                // put together a control word to write to the control reg
+                int cr_val = 0;
+                cr_val = USLOSS_TERM_CTRL_CHAR(cr_val, ch_to_write);
+                cr_val = USLOSS_TERM_CTRL_XMIT_INT(cr_val);
+                cr_val = USLOSS_TERM_CTRL_RECV_INT(cr_val);
+                cr_val = USLOSS_TERM_CTRL_XMIT_CHAR(cr_val);
+
+                int err = USLOSS_DeviceOutput(USLOSS_TERM_DEV, unit, (void *)(long)cr_val);
+                if (err == USLOSS_DEV_INVALID) {
+                    USLOSS_Console("ERROR: Failed to write character %c to terminal %d\n", ch_to_write, unit);
+                    USLOSS_Halt(1);
+                }
+
+                // put together a control word
+            } else {
+                // pop the process off the queue and wake it up
+                
+                gain_mutex(__func__);
+                term->write_queue = term->write_queue->next;
+                release_mutex(__func__);
+
+                unblockProc(req->pid);
+
+            }
+
+
+
 
         } 
 
@@ -302,10 +348,6 @@ void kern_sleep(USLOSS_Sysargs *arg) {
 void kern_term_read(USLOSS_Sysargs *arg) {
     // check for kernel mode
     CHECKMODE;
-    /*dumpProcesses();*/
-
-    // gain mutex
-    gain_mutex(__func__);
 
     // unpack arguments
     char *buf     =    (char *)arg->arg1;
@@ -313,46 +355,66 @@ void kern_term_read(USLOSS_Sysargs *arg) {
     int   unit    = (int)(long)arg->arg3;
     int   lenOut  =                   -1;
 
+    // check for invalid inputs
+    if (!buf || bufSize <= 0 || !(0 <= unit && unit < 4)) {
+        arg->arg4 = (void *)(long)-1;
+        return;
+    }
+
     // pack the arguments into an easily-sendable form
     rw_req req = {
         .pid     = getpid(),
         .buf     =      buf,
         .bufSize =  bufSize,
         .lenOut  =  &lenOut, // termd will write this val
-        .next    =  NULL
+        .next    =     NULL
     };
 
     // retrieve a reference to the appropriate terminal
     Terminal *term = &terms[unit];
 
+    // gain mutex
+    gain_mutex(__func__);
+
     // add the request to the queue
     put_into_term_queue(&req, &term->read_queue);
 
-    // block while waiting for request to be fulfilled
+    // release mutex before blocking
     release_mutex(__func__);
+
+    // block while waiting for request to be fulfilled
     blockMe();
-    gain_mutex(__func__);
 
     // repack return values
     if (lenOut == -1) USLOSS_Console("ERROR: It seems termd has not written to lenOut!\n");
-    arg->arg4 = (void *)(long)lenOut;
+    arg->arg2 = (void *)(long)lenOut;
+    arg->arg4 = (void *)(long)     0;
 
-    // release mutex
-    release_mutex(__func__);
 }
 
 void kern_term_write(USLOSS_Sysargs *arg) {
     // check for kernel mode
     CHECKMODE;
 
-    // gain mutex
-    gain_mutex(__func__);
-
     // unpack arguments
     char *buf     =    (char *)arg->arg1;
     int   bufSize = (int)(long)arg->arg2;
     int   unit    = (int)(long)arg->arg3;
     int   lenOut  =                   -1;
+
+    // check for invalid inputs
+    if (!buf || bufSize <= 0 || !(0 <= unit && unit < 4)) {
+        arg->arg4 = (void *)(long)-1;
+        return;
+    }
+
+    // enable xmit interrupts
+    int cr_val = 0x2 | 0x4; // make sure to turn off send char
+    int err = USLOSS_DeviceOutput(USLOSS_TERM_DEV, unit, (void *)(long)cr_val);
+    if (err == USLOSS_DEV_INVALID) {
+        USLOSS_Console("ERROR: Failed to turn on read interrupts!\n");
+        USLOSS_Halt(1);
+    }
 
     // pack the arguments into an easily-sendable form
     rw_req req = {
@@ -360,24 +422,42 @@ void kern_term_write(USLOSS_Sysargs *arg) {
         .buf     =      buf,
         .bufSize =  bufSize,
         .lenOut  =  &lenOut, // termd will write this val
-        .next    =  NULL
+        .next    =     NULL
     };
 
     // retrieve a reference to the appropriate terminal
     Terminal *term = &terms[unit];
 
-    // add the request to the queue
-    /*put_into_term_queue(&req, term->read_queue);*/
+    // gain mutex
+    gain_mutex(__func__);
 
-    // TODO: grab term write semaphore in here somewhere?
-
-
-    // repack return value
-    if (lenOut == -1) USLOSS_Console("ERROR: It seems termd has not written to lenOut!\n");
-    arg->arg4 = (void *)(long)lenOut;
-
-    // release mutex
+    // release mutex before blocking
     release_mutex(__func__);
+
+    // grab write semaphore
+    kernSemP(term->write_sem);
+
+    // add the request to the queue
+    put_into_term_queue(&req, &term->write_queue);
+
+    // block while waiting for request to be fulfilled
+    blockMe();
+
+    // release write semaphore
+    kernSemV(term->write_sem);
+
+    // repack return values
+    if (lenOut == -1) USLOSS_Console("ERROR: It seems termd has not written to lenOut!\n");
+    arg->arg2 = (void *)(long)lenOut;
+    arg->arg4 = (void *)(long)     0;
+
+    // disable xmit interrupts
+    cr_val = 0x2; // make sure to turn off send char
+    err = USLOSS_DeviceOutput(USLOSS_TERM_DEV, unit, (void *)(long)cr_val);
+    if (err == USLOSS_DEV_INVALID) {
+        USLOSS_Console("ERROR: Failed to turn on read interrupts!\n");
+        USLOSS_Halt(1);
+    }
 }
 
 
