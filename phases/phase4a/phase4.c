@@ -1,11 +1,10 @@
 #include "phase1.h"
 #include "phase2.h"
-#include "phase3_usermode.h"
-#include "phase3_kernelInterfaces.h"
 #include "phase4.h"
 #include <usloss.h>
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
 
 #include "usyscall.h" // TODO: delete this later
 
@@ -21,6 +20,34 @@
     USLOSS_PsrSet(USLOSS_PsrGet() & ~USLOSS_PSR_CURRENT_MODE); \
 }
 
+// enable terminal recv interrupts
+#define ENABLE_TERM_RECV_INT(unit) { \
+    int err = USLOSS_DeviceOutput(USLOSS_TERM_DEV, (unit), (void *)(long)0x2); \
+    if (err == USLOSS_DEV_INVALID) { \
+        USLOSS_Console("ERROR: Failed to turn on read interrupts!\n"); \
+        USLOSS_Halt(1); \
+    } \
+}
+
+// enable terminal xmit interrupts
+#define ENABLE_TERM_XMIT_INT(unit) { \
+    int err = USLOSS_DeviceOutput(USLOSS_TERM_DEV, (unit), (void *)(long)(0x2 | 0x4)); \
+    if (err == USLOSS_DEV_INVALID) { \
+        USLOSS_Console("ERROR: Failed to turn on xmit interrupts!\n"); \
+        USLOSS_Halt(1); \
+    } \
+}
+
+// disable terminal xmit interrupts... same as enabling recv interrupts but makes for cleaner code
+#define DISABLE_TERM_XMIT_INT(unit) { \
+    int err = USLOSS_DeviceOutput(USLOSS_TERM_DEV, (unit), (void *)(long)0x2); \
+    if (err == USLOSS_DEV_INVALID) { \
+        USLOSS_Console("ERROR: Failed to turn off xmit interrupts!\n"); \
+        USLOSS_Halt(1); \
+    } \
+}
+
+// disable terminal xmit interrupts
 // struct definitions
 typedef struct pcb {
     int pid;
@@ -29,12 +56,12 @@ typedef struct pcb {
 } pcb;
 
 typedef struct rw_req {
-           int      pid;
-           char    *buf;
-           int  bufSize;
+           int         pid;
+           char       *buf;
+           int     bufSize;
+           int     *lenOut;
            int cur_buf_idx;
-           int *lenOut;
-    struct rw_req *next;
+    struct rw_req    *next;
 } rw_req;
 
 typedef struct term {
@@ -74,8 +101,6 @@ Terminal terms[4];
 
 void gain_mutex(const char *func) {
     /*USLOSS_Console("%s IS TRYING TO GAIN THE MUTEX!\n", func);*/
-    /*int fail = kernSemP(mutex);*/
-    /*if (fail) USLOSS_Console("ERROR: P(mutex) failed!\n");*/
     MboxSend(mutex, NULL, 0);
     /*USLOSS_Console("%s HAS GAINED THE MUTEX!\n", func);*/
 }
@@ -83,8 +108,6 @@ void gain_mutex(const char *func) {
 void release_mutex(const char *func) {
     /*USLOSS_Console("%s IS TRYING TO RELEASE THE MUTEX!\n", func);*/
     MboxRecv(mutex, NULL, 0);
-    /*int fail = kernSemV(mutex);*/
-    /*if (fail) USLOSS_Console("ERROR: V(mutex) failed!\n");*/
     /*USLOSS_Console("%s HAS RELEASED THE MUTEX!\n", func);*/
 }
 
@@ -93,8 +116,6 @@ void phase4_init() {
     CHECKMODE;
 
     // initialize the mutex using a semaphore
-    /*int fail = kernSemCreate(1, &mutex);*/
-    /*if (fail) USLOSS_Console("ERROR: Failed to create mutex semaphore!\n");*/
     mutex = MboxCreate(1, 0);
 
     // gain the mutex
@@ -124,12 +145,7 @@ void phase4_init() {
         term->write_mbox = MboxCreate(1, 0);
 
         // enable terminal recv interrupts
-        int cr_val = 0x2; // make sure to turn off send char
-        int err = USLOSS_DeviceOutput(USLOSS_TERM_DEV, i, (void *)(long)cr_val);
-        if (err == USLOSS_DEV_INVALID) {
-            USLOSS_Console("ERROR: Failed to turn on read interrupts!\n");
-            USLOSS_Halt(1);
-        }
+        for (int unit = 0; unit < 4; unit++) ENABLE_TERM_RECV_INT(unit);
     }
 
     // read the disk sizes here and save them as global varaibles
@@ -205,6 +221,7 @@ int termd(void *arg) {
                 // conditionally send the buffer to the terminal mailbox
                 // +1 for null terminator
                 gain_mutex(__func__);
+
                 MboxCondSend(term->mbox, term->buf, strlen(term->buf)+1);
                 release_mutex(__func__);
 
@@ -221,21 +238,12 @@ int termd(void *arg) {
                     rw_req *req = term->read_queue;
                     term->read_queue = term->read_queue->next;
 
-                    // TODO: use blocking recv?
-                    // deliver the terminal line
-
-                    // receive into current working buffer
-                    MboxRecv(term->mbox, term->buf, MAXLINE);
+                    // deliver the chars from the terminal line
+                    MboxCondRecv(term->mbox, req->buf, MAXLINE);
 
                     // record the length read
-                    int buf_len = strlen(term->buf);
+                    int buf_len = strlen(req->buf);
                     *req->lenOut = (buf_len < req->bufSize) ? buf_len : req->bufSize;
-
-                    // copy over bufSize chars
-                    strncpy(req->buf, term->buf, req->bufSize);
-
-                    // zero out the buffer again
-                    explicit_bzero(term->buf, MAXLINE+1);
 
                     // release the mutex before unblocking the process
                     release_mutex(__func__);
@@ -250,7 +258,7 @@ int termd(void *arg) {
             // ready to write a character out
             
             if (term->write_queue) {
-                /*dumpProcesses();*/
+                gain_mutex(__func__);
                 rw_req *req = term->write_queue;
 
                 if (req->cur_buf_idx < req->bufSize) {
@@ -270,12 +278,17 @@ int termd(void *arg) {
                     int err = USLOSS_DeviceOutput(USLOSS_TERM_DEV, unit, (void *)(long)cr_val);
                     if (err == USLOSS_DEV_INVALID) {
                         USLOSS_Console("ERROR: Failed to write character %c to terminal %d\n", ch_to_write, unit);
+                        release_mutex(__func__);
                         USLOSS_Halt(1);
                     }
 
+                    release_mutex(__func__);
+
                 } else {
+                    // write the len out to the req
+                    *req->lenOut = req->bufSize;
+
                     // pop the process off the queue and wake it up
-                    gain_mutex(__func__);
                     term->write_queue = term->write_queue->next;
                     release_mutex(__func__);
 
@@ -348,51 +361,8 @@ void kern_term_read(USLOSS_Sysargs *arg) {
     // check for kernel mode
     CHECKMODE;
 
-    // unpack arguments
-    char *buf     =    (char *)arg->arg1;
-    int   bufSize = (int)(long)arg->arg2;
-    int   unit    = (int)(long)arg->arg3;
-    int   lenOut;
-
-    // check for invalid inputs
-    if (!buf || bufSize <= 0 || !(0 <= unit && unit < 4)) {
-        arg->arg4 = (void *)(long)-1;
-        return;
-    }
-
-    // pack the arguments into an easily-sendable form
-    rw_req req = {
-        .pid     = getpid(),
-        .buf     =      buf,
-        .bufSize =  bufSize,
-        .lenOut  = &lenOut,
-        .next    =     NULL
-    };
-
-    // retrieve a reference to the appropriate terminal
-    Terminal *term = &terms[unit];
-
     // gain mutex
     gain_mutex(__func__);
-
-    // add the request to the queue
-    put_into_term_queue(&req, &term->read_queue);
-
-    // release mutex before blocking
-    release_mutex(__func__);
-
-    // block while waiting for request to be fulfilled
-    blockMe();
-
-    // repack return values
-    arg->arg2 = (void *)(long)lenOut; // the number of chars read
-    arg->arg4 = (void *)(long)     0;
-
-}
-
-void kern_term_write(USLOSS_Sysargs *arg) {
-    // check for kernel mode
-    CHECKMODE;
 
     // unpack arguments
     char *buf     =    (char *)arg->arg1;
@@ -403,15 +373,8 @@ void kern_term_write(USLOSS_Sysargs *arg) {
     // check for invalid inputs
     if (!buf || bufSize <= 0 || !(0 <= unit && unit < 4)) {
         arg->arg4 = (void *)(long)-1;
+        release_mutex(__func__);
         return;
-    }
-
-    // enable xmit interrupts
-    int cr_val = 0x2 | 0x4; // make sure to turn off send char
-    int err = USLOSS_DeviceOutput(USLOSS_TERM_DEV, unit, (void *)(long)cr_val);
-    if (err == USLOSS_DEV_INVALID) {
-        USLOSS_Console("ERROR: Failed to turn on read interrupts!\n");
-        USLOSS_Halt(1);
     }
 
     // pack the arguments into an easily-sendable form
@@ -419,23 +382,80 @@ void kern_term_write(USLOSS_Sysargs *arg) {
         .pid     = getpid(),
         .buf     =      buf,
         .bufSize =  bufSize,
+        .lenOut  =  &lenOut,
         .next    =     NULL
     };
 
     // retrieve a reference to the appropriate terminal
     Terminal *term = &terms[unit];
 
-    // gain mutex
-    gain_mutex(__func__);
+    // add the request to the queue
+    put_into_term_queue(&req, &term->read_queue);
 
     // release mutex before blocking
+    release_mutex(__func__);
+
+    // block while waiting for request to be fulfilled
+    blockMe();
+
+    // regain mutex after blocking
+    gain_mutex(__func__);
+
+    // repack return values
+    assert(lenOut != -1);
+    arg->arg2 = (void *)(long)lenOut; // the number of chars read
+    arg->arg4 = (void *)(long)     0;
+
+    // release mutex here
+    release_mutex(__func__);
+}
+
+void kern_term_write(USLOSS_Sysargs *arg) {
+    // check for kernel mode
+    CHECKMODE;
+
+    gain_mutex(__func__);
+    // unpack arguments
+    char *buf     =    (char *)arg->arg1;
+    int   bufSize = (int)(long)arg->arg2;
+    int   unit    = (int)(long)arg->arg3;
+    int   lenOut  =                   -1;
+
+    // check for invalid inputs
+    if (!buf || bufSize <= 0 || !(0 <= unit && unit < 4)) {
+        arg->arg4 = (void *)(long)-1;
+        release_mutex(__func__);
+        return;
+    }
+
+    ENABLE_TERM_XMIT_INT(unit);
+
+    // pack the arguments into an easily-sendable form
+    rw_req req = {
+        .pid     = getpid(),
+        .buf     =      buf,
+        .bufSize =  bufSize,
+        .lenOut  =  &lenOut,
+        .next    =     NULL
+    };
+
+
+    // retrieve a reference to the appropriate terminal
+    Terminal *term = &terms[unit];
+
     release_mutex(__func__);
 
     // grab write resource
     MboxSend(term->write_mbox, NULL, 0);
 
+    // gain mutex
+    gain_mutex(__func__);
+
     // add the request to the queue
     put_into_term_queue(&req, &term->write_queue);
+
+    // release mutex before blocking
+    release_mutex(__func__);
 
     // block while waiting for request to be fulfilled
     blockMe();
@@ -443,17 +463,16 @@ void kern_term_write(USLOSS_Sysargs *arg) {
     // release write resource
     MboxRecv(term->write_mbox, NULL, 0);
 
+    gain_mutex(__func__);
+
     // repack return values
+    assert(lenOut != -1);
     arg->arg2 = (void *)(long)bufSize; // the number of chars written
     arg->arg4 = (void *)(long)      0;
 
-    // disable xmit interrupts
-    cr_val = 0x2; // make sure to turn off send char
-    err = USLOSS_DeviceOutput(USLOSS_TERM_DEV, unit, (void *)(long)cr_val);
-    if (err == USLOSS_DEV_INVALID) {
-        USLOSS_Console("ERROR: Failed to turn on read interrupts!\n");
-        USLOSS_Halt(1);
-    }
+    DISABLE_TERM_XMIT_INT(unit);
+
+    release_mutex(__func__);
 }
 
 
