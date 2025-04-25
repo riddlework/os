@@ -33,13 +33,14 @@ typedef struct rw_req {
            char    *buf;
            int  bufSize;
            int cur_buf_idx;
+           int *lenOut;
     struct rw_req *next;
 } rw_req;
 
 typedef struct term {
     char buf[MAXLINE+1];
     int mbox;
-    int write_sem;
+    int write_mbox;
     rw_req *read_queue;
     rw_req *write_queue;
 } Terminal;
@@ -119,20 +120,16 @@ void phase4_init() {
         // initialize mailbox
         term->mbox = MboxCreate(10, MAXLINE+1);
 
-        // initialize write semaphore
-        int fail = term->write_sem = kernSemCreate(1, &term->write_sem);
-        if (fail) USLOSS_Console("ERROR: Failed to create %d term_write semaphore!\n", i);
-    }
+        // initialize write mbox
+        term->write_mbox = MboxCreate(1, 0);
 
-    // enable terminal recv interrupts
-    int cr_val = 0x2; // make sure to turn off send char
-    for (int i = 0; i < 4; i++) {
+        // enable terminal recv interrupts
+        int cr_val = 0x2; // make sure to turn off send char
         int err = USLOSS_DeviceOutput(USLOSS_TERM_DEV, i, (void *)(long)cr_val);
         if (err == USLOSS_DEV_INVALID) {
             USLOSS_Console("ERROR: Failed to turn on read interrupts!\n");
             USLOSS_Halt(1);
         }
-
     }
 
     // read the disk sizes here and save them as global varaibles
@@ -229,9 +226,13 @@ int termd(void *arg) {
 
                     // receive into current working buffer
                     MboxRecv(term->mbox, term->buf, MAXLINE);
+
+                    // record the length read
+                    int buf_len = strlen(term->buf);
+                    *req->lenOut = (buf_len < req->bufSize) ? buf_len : req->bufSize;
+
                     // copy over bufSize chars
                     strncpy(req->buf, term->buf, req->bufSize);
-
 
                     // zero out the buffer again
                     explicit_bzero(term->buf, MAXLINE+1);
@@ -255,7 +256,7 @@ int termd(void *arg) {
                 if (req->cur_buf_idx < req->bufSize) {
                     // read the next character from the buffer
 
-                    /*USLOSS_Console("%d %d \n", req->cur_buf_idx, req->bufSize);*/
+                    /*USLOSS_Console("%d %d %d \n", unit, req->cur_buf_idx, req->bufSize);*/
                     char ch_to_write = req->buf[req->cur_buf_idx++];
 
                     /*USLOSS_Console("%c\n", ch_to_write);*/
@@ -351,6 +352,7 @@ void kern_term_read(USLOSS_Sysargs *arg) {
     char *buf     =    (char *)arg->arg1;
     int   bufSize = (int)(long)arg->arg2;
     int   unit    = (int)(long)arg->arg3;
+    int   lenOut;
 
     // check for invalid inputs
     if (!buf || bufSize <= 0 || !(0 <= unit && unit < 4)) {
@@ -363,6 +365,7 @@ void kern_term_read(USLOSS_Sysargs *arg) {
         .pid     = getpid(),
         .buf     =      buf,
         .bufSize =  bufSize,
+        .lenOut  = &lenOut,
         .next    =     NULL
     };
 
@@ -382,7 +385,7 @@ void kern_term_read(USLOSS_Sysargs *arg) {
     blockMe();
 
     // repack return values
-    arg->arg2 = (void *)(long)strlen(buf); // the number of chars read
+    arg->arg2 = (void *)(long)lenOut; // the number of chars read
     arg->arg4 = (void *)(long)     0;
 
 }
@@ -428,8 +431,8 @@ void kern_term_write(USLOSS_Sysargs *arg) {
     // release mutex before blocking
     release_mutex(__func__);
 
-    // grab write semaphore
-    kernSemP(term->write_sem);
+    // grab write resource
+    MboxSend(term->write_mbox, NULL, 0);
 
     // add the request to the queue
     put_into_term_queue(&req, &term->write_queue);
@@ -437,8 +440,8 @@ void kern_term_write(USLOSS_Sysargs *arg) {
     // block while waiting for request to be fulfilled
     blockMe();
 
-    // release write semaphore
-    kernSemV(term->write_sem);
+    // release write resource
+    MboxRecv(term->write_mbox, NULL, 0);
 
     // repack return values
     arg->arg2 = (void *)(long)bufSize; // the number of chars written
@@ -451,8 +454,6 @@ void kern_term_write(USLOSS_Sysargs *arg) {
         USLOSS_Console("ERROR: Failed to turn on read interrupts!\n");
         USLOSS_Halt(1);
     }
-
-    dumpProcesses();
 }
 
 
