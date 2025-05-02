@@ -1,0 +1,83 @@
+There are two disk devices. Each disk has X tracks. Each track has 16 sectors, each
+of 512 bytes in size.
+
+A disk operation is initiated by a call of the form
+
+USLOSS_DeviceOutput(USLOSS_DISK_DEV,unit,request);
+
+where request is a pointer to a USLOSS_DeviceRequest structure
+-- opr is one of: USLOSS_DISK_READ
+                  USLOSS_DISK_WRITE
+                  USLOSS_DISK_SEEK
+                  USLOSS_DISK_TRACKS
+if opr is
+    1. USLOSS_DISK_READ
+    2. USLOSS_DISK_WRITE
+-- reg1: the index of the sector to be read/wrriten within the
+         current track
+-- reg2: a pointer to a 512-byte buffer into which data from the disk will be
+         read to/written from
+
+if opr is USLOSS_DISK_SEEK
+-- reg1: the track number to which the disk's RW head should be moved
+
+if opr is USLSOS_DISK_TRACKS
+-- reg1: a pointer to an integer into which the number of disk tracks will
+         be stored
+
+To check on the status of a request, and to see whether the disk is busy or not,
+call
+
+int status;
+USLOSS_DeviceInput(USLOSS_DISK_DEV, unit, &status);
+
+-- USLOSS_DEV_READY: request has been completed, ready for a new request
+-- USLOSS_DEV_BUSY: request is being processed
+-- USLOSS_DEV_ERROR: last request caused an error (print error message and halt)
+
+Call waitDevice to read the status using USLOSS_DeviceInput, which will block
+until an interrupt occurs. since USLOSS_IntVec[USLOSS_DISK_INT] is only called
+once the requested operation has been completed, we can enter a new request
+each time waitDevice unblocks. We don't have to rely on raw calls to
+USLOSS_DeviceInput
+
+Your code must handle both QUEUEING and SEQUENCING!
+
+Building a request struct in memory:
+
+#DEFINE BLOCKSZ 512
+
+int unit          = ...; // 0 or 1
+int block_idx     = ...; // 0-15, inclusive
+char buf[BLOCKSZ] = ...;
+
+// type definition
+typedef struct USLOSS_DeviceRequest {
+    int opr;
+    void *reg1;
+    void *reg2;
+} USLOSS_DeviceRequest;
+
+// example use?
+USLOSS_DeviceRequest req = {
+    .unit       = unit,
+    .blockIndex = blockIndex, // is this the right name?
+    .buf        = buf;        // memcpy?
+};
+
+USLOSS_DeviceOutput(USLOSS_DISK_DEV, unit, &req);
+
+Should also define disk structs, for holding the read/write queues? If so, would
+be like this:
+
+struct DiskState {
+    USLOSS_DeviceRequest req;
+    ... something else here...
+} disks[2];
+
+THE C-SCAN ALGORITHM
+
+
+There are two cases that must be handled appropriately, and in order, for the disk daemon:
+    1. The disk is in a ready state, so any call to waitDevice will block indefinitely.
+    2. There are no rw requests in the queue.

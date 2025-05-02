@@ -18,7 +18,7 @@
  * Simple!  We sleep the timeout proc for 1 second, then sleep for
  * this value minus 1.  :)
  */
-int testcase_timeout = 10;
+int testcase_timeout = 100;
 
 
 

@@ -6,8 +6,6 @@
 #include <string.h>
 #include <assert.h>
 
-#include "usyscall.h" // TODO: delete this later
-
 // a macro for checking that the program is currently running in kernel mode
 #define CHECKMODE { \
     if (!(USLOSS_PsrGet() & USLOSS_PSR_CURRENT_MODE)) { \
